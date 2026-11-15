@@ -1084,11 +1084,25 @@ static int hx83102_unprepare(struct drm_panel *panel)
 	return 0;
 }
 
+/* Bring-up experiment: keep the bootloader's panel state, send nothing. */
+static bool keep_bootloader_init;
+module_param(keep_bootloader_init, bool, 0444);
+
 static int hx83102_prepare(struct drm_panel *panel)
 {
 	struct hx83102 *ctx = panel_to_hx83102(panel);
 	struct mipi_dsi_device *dsi = ctx->dsi;
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+
+	if (keep_bootloader_init) {
+		/* hold the supplies the bootloader turned on, touch nothing else */
+		dsi_ctx.accum_err = regulator_enable(ctx->pp1800);
+		if (!dsi_ctx.accum_err)
+			dsi_ctx.accum_err = regulator_enable(ctx->avdd);
+		if (!dsi_ctx.accum_err)
+			dsi_ctx.accum_err = regulator_enable(ctx->avee);
+		return dsi_ctx.accum_err;
+	}
 
 	gpiod_set_value_cansleep(ctx->enable_gpio, 0);
 	usleep_range(1000, 1500);
