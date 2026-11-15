@@ -464,6 +464,19 @@ static int mt6359_put_volsw(struct snd_kcontrol *kcontrol,
 	return ret;
 }
 
+/*
+ * The hardware gain code of the DAC/output stages decreases: 0 = +8 dB ... 0x12 = -10 dB,
+ * while the ALSA scale (TLV -10..+8 dB) increases. So the controls are declared with invert=1
+ * (write: code = max - index), and here the code is translated back to an index. Codes outside
+ * the scale (-22/-40 dB when the output is switched off) are shown as the quietest index 0.
+ */
+static int mt6359_gain_to_idx(int code, int max)
+{
+	if (code < 0 || code > max)
+		return 0;
+	return max - code;
+}
+
 static int mt6359_get_playback_volsw(struct snd_kcontrol *kcontrol,
 				     struct snd_ctl_elem_value *ucontrol)
 {
@@ -475,19 +488,19 @@ static int mt6359_get_playback_volsw(struct snd_kcontrol *kcontrol,
 	switch (mc->reg) {
 	case MT6359_ZCD_CON2:
 		ucontrol->value.integer.value[0] =
-			priv->ana_gain[AUDIO_ANALOG_VOLUME_HPOUTL];
+			mt6359_gain_to_idx(priv->ana_gain[AUDIO_ANALOG_VOLUME_HPOUTL], mc->max);
 		ucontrol->value.integer.value[1] =
-			priv->ana_gain[AUDIO_ANALOG_VOLUME_HPOUTR];
+			mt6359_gain_to_idx(priv->ana_gain[AUDIO_ANALOG_VOLUME_HPOUTR], mc->max);
 		break;
 	case MT6359_ZCD_CON1:
 		ucontrol->value.integer.value[0] =
-			priv->ana_gain[AUDIO_ANALOG_VOLUME_LINEOUTL];
+			mt6359_gain_to_idx(priv->ana_gain[AUDIO_ANALOG_VOLUME_LINEOUTL], mc->max);
 		ucontrol->value.integer.value[1] =
-			priv->ana_gain[AUDIO_ANALOG_VOLUME_LINEOUTR];
+			mt6359_gain_to_idx(priv->ana_gain[AUDIO_ANALOG_VOLUME_LINEOUTR], mc->max);
 		break;
 	case MT6359_ZCD_CON3:
 		ucontrol->value.integer.value[0] =
-			priv->ana_gain[AUDIO_ANALOG_VOLUME_HSOUTL];
+			mt6359_gain_to_idx(priv->ana_gain[AUDIO_ANALOG_VOLUME_HSOUTL], mc->max);
 		break;
 	default:
 		return -EINVAL;
@@ -2802,6 +2815,18 @@ static int mt6359_codec_init_reg(struct snd_soc_component *cmpnt)
 	return 0;
 }
 
+static int mic_type0 = MIC_TYPE_MUX_DCC;
+module_param(mic_type0, int, 0444);
+MODULE_PARM_DESC(mic_type0, "mic type of MIC0 (default 3 = DCC: needed on begonia, otherwise the preamplifier saturates on the DC offset; -1: from DT/idle)");
+
+/* secondary microphones (noise suppression): default -1 = do not touch (from DT/idle); 3 = DCC for experiments */
+static int mic_type1 = -1;
+module_param(mic_type1, int, 0444);
+MODULE_PARM_DESC(mic_type1, "mic type of MIC1 (AIN1, micbias1): -1 from DT/idle, 1 acc, 3 dcc");
+static int mic_type2 = -1;
+module_param(mic_type2, int, 0444);
+MODULE_PARM_DESC(mic_type2, "mic type of MIC2 (AIN2/AIN3, micbias2): -1 from DT/idle, 1 acc, 3 dcc");
+
 static int mt6359_codec_probe(struct snd_soc_component *cmpnt)
 {
 	struct mt6359_priv *priv = snd_soc_component_get_drvdata(cmpnt);
@@ -2817,20 +2842,22 @@ static void mt6359_codec_remove(struct snd_soc_component *cmpnt)
 }
 
 static const DECLARE_TLV_DB_SCALE(playback_tlv, -1000, 100, 0);
+/* headphones: the range is extended down by 2 dB (codes 19..20 = -11..-12 dB), index 0..20 = -12..+8 dB */
+static const DECLARE_TLV_DB_SCALE(hp_playback_tlv, -1200, 100, 0);
 static const DECLARE_TLV_DB_SCALE(capture_tlv, 0, 600, 0);
 
 static const struct snd_kcontrol_new mt6359_snd_controls[] = {
 	/* dl pga gain */
 	SOC_DOUBLE_EXT_TLV("Headset Volume",
-			   MT6359_ZCD_CON2, 0, 7, 0x12, 0,
+			   MT6359_ZCD_CON2, 0, 7, 0x14, 1,
 			   mt6359_get_playback_volsw, mt6359_put_volsw,
-			   playback_tlv),
+			   hp_playback_tlv),
 	SOC_DOUBLE_EXT_TLV("Lineout Volume",
-			   MT6359_ZCD_CON1, 0, 7, 0x12, 0,
+			   MT6359_ZCD_CON1, 0, 7, 0x12, 1,
 			   mt6359_get_playback_volsw, mt6359_put_volsw,
 			   playback_tlv),
 	SOC_SINGLE_EXT_TLV("Handset Volume",
-			   MT6359_ZCD_CON3, 0, 0x12, 0,
+			   MT6359_ZCD_CON3, 0, 0x12, 1,
 			   mt6359_get_playback_volsw, mt6359_put_volsw,
 			   playback_tlv),
 
@@ -2908,6 +2935,14 @@ static int mt6359_parse_dt(struct mt6359_priv *priv)
 			 __func__, MIC_TYPE_MUX_IDLE);
 		priv->mux_select[MUX_MIC_TYPE_2] = MIC_TYPE_MUX_IDLE;
 	}
+
+	/* DEBUG/tuning: forced type of the main microphone (0 idle,1 acc,2 dmic,3 dcc,4 dcc_ecm_diff,5 dcc_ecm_single) */
+	if (mic_type0 >= 0)
+		priv->mux_select[MUX_MIC_TYPE_0] = mic_type0;
+	if (mic_type1 >= 0)
+		priv->mux_select[MUX_MIC_TYPE_1] = mic_type1;
+	if (mic_type2 >= 0)
+		priv->mux_select[MUX_MIC_TYPE_2] = mic_type2;
 
 	return 0;
 }

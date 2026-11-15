@@ -94,6 +94,7 @@
 #define MT6360_AICR_MIN		100000
 #define MT6360_AICR_MAX		3250000
 #define MT6360_AICR_STEP	50000
+#define MT6360_AICR_DEFAULT	500000
 /* uA */
 #define MT6360_IPREC_MIN	100000
 #define MT6360_IPREC_MAX	850000
@@ -134,6 +135,9 @@ struct mt6360_chg_info {
 	bool bc12_en;
 	int psy_usb_type;
 	struct work_struct chrdet_work;
+	struct work_struct aicr_work;
+	struct notifier_block psy_nb;
+	char supplier[64];
 };
 
 enum mt6360_iinlmtsel {
@@ -560,6 +564,56 @@ static enum power_supply_property mt6360_charger_properties[] = {
 	POWER_SUPPLY_PROP_USB_TYPE,
 };
 
+/*
+ * BC1.2 detection says nothing about the real capability of a USB-C/PD
+ * source: it reports SDP and leaves the input current limit at 500 mA. Follow
+ * the other USB power supply of the system (the TCPM source supply) instead and
+ * use the maximum current it advertises while it is online.
+ */
+static void mt6360_charger_aicr_work(struct work_struct *work)
+{
+	struct mt6360_chg_info *mci = container_of(work, struct mt6360_chg_info, aicr_work);
+	union power_supply_propval val, online;
+	struct power_supply *supplier;
+
+	supplier = power_supply_get_by_name(mci->supplier);
+	if (!supplier)
+		return;
+
+	if (!power_supply_get_property(supplier, POWER_SUPPLY_PROP_ONLINE, &online)) {
+		if (!online.intval) {
+			/* cable gone: back to the safe default for the next one */
+			val.intval = MT6360_AICR_DEFAULT;
+			mt6360_charger_set_aicr(mci, &val);
+		} else if (!power_supply_get_property(supplier, POWER_SUPPLY_PROP_CURRENT_MAX,
+						      &val) && val.intval > 0) {
+			mt6360_charger_set_aicr(mci, &val);
+		}
+	}
+
+	power_supply_put(supplier);
+}
+
+static int mt6360_charger_psy_event(struct notifier_block *nb, unsigned long event, void *data)
+{
+	struct mt6360_chg_info *mci = container_of(nb, struct mt6360_chg_info, psy_nb);
+	struct power_supply *psy = data;
+
+	if (event != PSY_EVENT_PROP_CHANGED || psy == mci->psy ||
+	    psy->desc->type != POWER_SUPPLY_TYPE_USB)
+		return NOTIFY_OK;
+
+	strscpy(mci->supplier, psy->desc->name, sizeof(mci->supplier));
+	schedule_work(&mci->aicr_work);
+
+	return NOTIFY_OK;
+}
+
+static void mt6360_charger_unreg_notifier(void *data)
+{
+	power_supply_unreg_notifier(data);
+}
+
 static const struct power_supply_desc mt6360_charger_desc = {
 	.type			= POWER_SUPPLY_TYPE_USB,
 	.properties		= mt6360_charger_properties,
@@ -776,6 +830,27 @@ static int mt6360_chg_init_setting(struct mt6360_chg_info *mci)
 	return 0;
 }
 
+/* charge current/voltage limits of the battery ("monitored-battery") */
+static void mt6360_charger_apply_battery_info(struct mt6360_chg_info *mci)
+{
+	struct power_supply_battery_info *info;
+	union power_supply_propval val;
+
+	if (power_supply_get_battery_info(mci->psy, &info))
+		return;
+
+	if (info->constant_charge_current_max_ua > 0) {
+		val.intval = info->constant_charge_current_max_ua;
+		mt6360_charger_set_ichg(mci, &val);
+	}
+	if (info->constant_charge_voltage_max_uv > 0) {
+		val.intval = info->constant_charge_voltage_max_uv;
+		mt6360_charger_set_cv(mci, &val);
+	}
+
+	power_supply_put_battery_info(mci->psy, info);
+}
+
 static int mt6360_charger_probe(struct platform_device *pdev)
 {
 	struct mt6360_chg_info *mci;
@@ -816,6 +891,20 @@ static int mt6360_charger_probe(struct platform_device *pdev)
 	if (IS_ERR(mci->psy))
 		return dev_err_probe(&pdev->dev, PTR_ERR(mci->psy),
 				     "Failed to register power supply dev\n");
+
+	ret = devm_work_autocancel(&pdev->dev, &mci->aicr_work, mt6360_charger_aicr_work);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret, "Failed to set aicr work\n");
+
+	mci->psy_nb.notifier_call = mt6360_charger_psy_event;
+	ret = power_supply_reg_notifier(&mci->psy_nb);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret, "Failed to register notifier\n");
+	ret = devm_add_action_or_reset(&pdev->dev, mt6360_charger_unreg_notifier, &mci->psy_nb);
+	if (ret)
+		return ret;
+
+	mt6360_charger_apply_battery_info(mci);
 
 
 	ret = mt6360_chg_irq_register(pdev);
