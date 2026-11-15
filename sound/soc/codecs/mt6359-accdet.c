@@ -1049,7 +1049,7 @@ err_accdet_wq:
 
 static struct platform_driver mt6359_accdet_driver = {
 	.driver = {
-		.name = "pmic-codec-accdet",
+		.name = "mt6359-accdet",	/* as the MFD cell; in the original kernel "pmic-codec-accdet" does not match the device name */
 	},
 	.probe = mt6359_accdet_probe,
 };

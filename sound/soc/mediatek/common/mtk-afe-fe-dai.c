@@ -6,10 +6,12 @@
  * Author: Garlic Tseng <garlic.tseng@mediatek.com>
  */
 
+#include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
+#include <linux/workqueue.h>
 #include <sound/soc.h>
 #include "mtk-afe-platform-driver.h"
 #include <sound/pcm_params.h>
@@ -238,6 +240,12 @@ int mtk_afe_fe_trigger(struct snd_pcm_substream *substream, int cmd,
 		mtk_regmap_update_bits(afe->regmap, irq_data->irq_en_reg,
 				       1, 1, irq_data->irq_en_shift);
 
+		/* IRQ -> AP (the vendor irq_ap_en_reg = AFE_IRQ_MCU_EN) */
+		if (irq_data->irq_ap_en_reg)
+			mtk_regmap_update_bits(afe->regmap,
+					       irq_data->irq_ap_en_reg,
+					       1, 1, irq_data->irq_ap_en_shift);
+
 		return 0;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
@@ -250,6 +258,10 @@ int mtk_afe_fe_trigger(struct snd_pcm_substream *substream, int cmd,
 		/* disable interrupt */
 		mtk_regmap_update_bits(afe->regmap, irq_data->irq_en_reg,
 				       1, 0, irq_data->irq_en_shift);
+		if (irq_data->irq_ap_en_reg)
+			mtk_regmap_update_bits(afe->regmap,
+					       irq_data->irq_ap_en_reg,
+					       1, 0, irq_data->irq_ap_en_shift);
 		/* and clear pending IRQ */
 		mtk_regmap_write(afe->regmap, irq_data->irq_clr_reg,
 				 1 << irq_data->irq_clr_shift);

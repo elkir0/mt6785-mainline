@@ -86,6 +86,8 @@ struct mtk_base_irq_data {
 	int irq_en_shift;
 	int irq_clr_reg;
 	int irq_clr_shift;
+	int irq_ap_en_reg;
+	int irq_ap_en_shift;
 	int irq_status_shift;
 };
 

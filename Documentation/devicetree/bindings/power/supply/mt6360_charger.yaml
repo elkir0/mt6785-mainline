@@ -21,6 +21,11 @@ properties:
     description: Maximum CHGIN regulation voltage in uV.
     enum: [ 5500000, 6500000, 11000000, 14500000 ]
 
+  monitored-battery:
+    description:
+      simple-battery node. Its constant-charge-current-max-microamp and
+      constant-charge-voltage-max-microvolt are applied to the charger.
+
   usb-otg-vbus-regulator:
     type: object
     description: OTG boost regulator.

@@ -94,7 +94,7 @@ snd_pcm_uframes_t mtk_afe_pcm_pointer(struct snd_soc_component *component,
 
 	ret = regmap_read(regmap, reg_ofs_cur, &hw_ptr);
 	if (ret || hw_ptr == 0) {
-		dev_err(dev, "%s hw_ptr err\n", __func__);
+		dev_err_ratelimited(dev, "%s hw_ptr err\n", __func__);
 		pcm_ptr_bytes = 0;
 		goto POINTER_RETURN_FRAMES;
 	}

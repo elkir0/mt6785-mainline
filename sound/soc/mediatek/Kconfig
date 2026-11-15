@@ -56,6 +56,31 @@ config SND_SOC_MT6797_MT6351
 	  Select Y if you have such device.
 	  If unsure select "N".
 
+config SND_SOC_MT6785
+	tristate "ASoC support for Mediatek MT6785 chip"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on COMMON_CLK
+	select SND_SOC_MEDIATEK
+	select MFD_SYSCON if SND_SOC_MT6359
+	help
+	  This adds ASoC platform driver support for Mediatek MT6785 chip
+	  that can be used with other codecs.
+	  Select Y if you have such device.
+	  If unsure select "N".
+
+config SND_SOC_MT6785_MT6359
+	tristate "ASoC Audio driver for MT6785 with MT6359 codec"
+	depends on SND_SOC_MT6785 && MTK_PMIC_WRAP
+	select SND_SOC_MT6359
+	select SND_SOC_MT6359_ACCDET
+	imply SND_SOC_TFA9874
+	help
+	  This adds the ASoC machine driver for MediaTek MT6785 boards
+	  with the MT6359 codec (Xiaomi Redmi Note 8 Pro): headphones,
+	  earpiece, microphones, jack detection and the TFA9874 speaker.
+	  Select Y if you have such device.
+	  If unsure select "N".
+
 config SND_SOC_MT7986
 	tristate "ASoC support for Mediatek MT7986 chip"
 	depends on ARCH_MEDIATEK
