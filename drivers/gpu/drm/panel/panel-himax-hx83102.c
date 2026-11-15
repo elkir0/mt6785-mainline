@@ -1099,8 +1099,9 @@ static int hx83102_unprepare(struct drm_panel *panel)
 }
 
 /* Bring-up experiment: keep the bootloader's panel state, send nothing. */
-static bool keep_bootloader_init;
-module_param(keep_bootloader_init, bool, 0444);
+/* 1: send nothing; 2: only exit sleep + display on */
+static int keep_bootloader_init;
+module_param(keep_bootloader_init, int, 0444);
 
 static int hx83102_prepare(struct drm_panel *panel)
 {
@@ -1115,6 +1116,11 @@ static int hx83102_prepare(struct drm_panel *panel)
 			dsi_ctx.accum_err = regulator_enable(ctx->avdd);
 		if (!dsi_ctx.accum_err)
 			dsi_ctx.accum_err = regulator_enable(ctx->avee);
+		if (dsi_ctx.accum_err || keep_bootloader_init < 2)
+			return dsi_ctx.accum_err;
+		mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
+		mipi_dsi_msleep(&dsi_ctx, 120);
+		mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
 		return dsi_ctx.accum_err;
 	}
 
