@@ -126,7 +126,12 @@
 		pp1800-supply = <&mt6360_vtp_ldo_reg>;
 		avdd-supply = <&lcd_vpos>;
 		avee-supply = <&lcd_vneg>;
-		rotation = <180>;
+		/*
+		 * The panel is mounted upside down, but "rotation = <180>" makes
+		 * compositors ask the MT6785 OVL for a 180-degree plane rotation,
+		 * which it renders as a folded, sheared picture: the compositor
+		 * rotates instead (Hyprland transform 2).
+		 */
 		pinctrl-names = "default";
 		pinctrl-0 = <&panel_pins>;
 
