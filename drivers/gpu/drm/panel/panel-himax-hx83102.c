@@ -81,6 +81,13 @@ struct hx83102_panel_desc {
 
 	bool has_backlight;
 
+	/**
+	 * @init_exits_sleep: the init sequence sends exit_sleep_mode itself
+	 * (some settings must be rewritten after it), so prepare() must not
+	 * send it again
+	 */
+	bool init_exits_sleep;
+
 	int (*init)(struct hx83102 *ctx);
 };
 
@@ -847,7 +854,13 @@ static int j706f_boe_init(struct hx83102 *ctx)
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_DISPLAY_BRIGHTNESS, 0x07, 0xb8);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_CONTROL_DISPLAY, 0x2c);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_TEAR_ON, 0x00);
-	/* Sent after sleep out in the vendor sequence. */
+	/*
+	 * As the vendor sequence does: exit sleep, then write SETDISP again
+	 * (resolution and interface settings), which sleep-out otherwise
+	 * resets; prepare() then only turns the display on.
+	 */
+	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
+	mipi_dsi_msleep(&dsi_ctx, 60);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, HX83102_SETDISP, 0x00, 0xb0, 0x47, 0xd0, 0x00, 0x2c,
 				     0x50, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x15, 0x20, 0xd7, 0x00);
 
@@ -1029,6 +1042,7 @@ static const struct hx83102_panel_desc j706f_boe_desc = {
 		.height_mm = 238,
 	},
 	.has_backlight = true,
+	.init_exits_sleep = true,
 	.init = j706f_boe_init,
 };
 
@@ -1109,8 +1123,10 @@ static int hx83102_prepare(struct drm_panel *panel)
 
 	dsi_ctx.accum_err = ctx->desc->init(ctx);
 
-	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
-	mipi_dsi_msleep(&dsi_ctx, 120);
+	if (!ctx->desc->init_exits_sleep) {
+		mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
+		mipi_dsi_msleep(&dsi_ctx, 120);
+	}
 	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
 	if (dsi_ctx.accum_err)
 		goto poweroff;
