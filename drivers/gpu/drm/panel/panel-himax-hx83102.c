@@ -863,6 +863,8 @@ static int j706f_boe_init(struct hx83102 *ctx)
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_DISPLAY_BRIGHTNESS, 0x07, 0xb8);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_CONTROL_DISPLAY, 0x2c);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_TEAR_ON, 0x00);
+	/* 24 bpp, which the vendor sequence leaves to the OTP default */
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_PIXEL_FORMAT, 0x77);
 	/*
 	 * As the vendor sequence does: exit sleep, then write SETDISP again
 	 * (resolution and interface settings), which sleep-out otherwise
@@ -1159,6 +1161,18 @@ static int hx83102_prepare(struct drm_panel *panel)
 	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
 	if (dsi_ctx.accum_err)
 		goto poweroff;
+
+	{
+		/* bring-up: what the panel reports after init */
+		u8 fmt = 0, pwr = 0, madctl = 0;
+		int r1, r2, r3;
+
+		r1 = mipi_dsi_dcs_get_pixel_format(dsi, &fmt);
+		r2 = mipi_dsi_dcs_get_power_mode(dsi, &pwr);
+		r3 = mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_ADDRESS_MODE, &madctl, 1);
+		dev_err(&dsi->dev, "panel reports: pixel_format=%#x (%d) power_mode=%#x (%d) address_mode=%#x (%d)\n",
+			fmt, r1, pwr, r2, madctl, r3);
+	}
 
 	return 0;
 
