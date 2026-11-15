@@ -110,6 +110,42 @@
 	proc-supply = <&mt6359_vproc1_buck_reg>;
 };
 
+&dither0_out {
+	remote-endpoint = <&dsi0_in>;
+};
+
+/* BOE 1200x2000 on a Himax HX83102P, video mode, 4 lanes, mounted upside down */
+&dsi0 {
+	status = "okay";
+
+	panel@0 {
+		compatible = "lenovo,j706f-boe-hx83102p";
+		reg = <0>;
+		/* the driver's "enable" line is the panel reset (stock: GPIO44) */
+		enable-gpios = <&pio 44 GPIO_ACTIVE_HIGH>;
+		pp1800-supply = <&mt6360_vtp_ldo_reg>;
+		avdd-supply = <&lcd_vpos>;
+		avee-supply = <&lcd_vneg>;
+		rotation = <180>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&panel_pins>;
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&dsi0_out>;
+			};
+		};
+	};
+};
+
+&dsi0_in {
+	remote-endpoint = <&dither0_out>;
+};
+
+&dsi0_out {
+	remote-endpoint = <&panel_in>;
+};
+
 &gpu {
 	mali-supply = <&mt6359_vgpu11_buck_reg>;
 	status = "okay";
@@ -378,6 +414,10 @@
  * stops answering on SDIO once the regulator core switches vcn18 off as
  * unused.
  */
+&mipi_tx0 {
+	status = "okay";
+};
+
 &mt6359_vcn18_ldo_reg {
 	regulator-always-on;
 };
@@ -487,6 +527,12 @@
 			pinmux = <PINMUX_GPIO134__FUNC_MSDC1_CLK>;
 			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
 			drive-strength = <8>;
+		};
+	};
+
+	panel_pins: panel-pins {
+		pins-reset {
+			pinmux = <PINMUX_GPIO44__FUNC_GPIO44>;
 		};
 	};
 
