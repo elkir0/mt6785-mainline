@@ -88,6 +88,15 @@ struct hx83102_panel_desc {
 	 */
 	bool init_exits_sleep;
 
+	/**
+	 * @noncont_clock: the panel needs the DSI clock lane to drop to LP
+	 * between lines (non-continuous clock), as its bootloader sets it
+	 */
+	bool noncont_clock;
+
+	/** @reset_low_ms: reset pulse length, if longer than the default */
+	unsigned int reset_low_ms;
+
 	int (*init)(struct hx83102 *ctx);
 };
 
@@ -1043,6 +1052,9 @@ static const struct hx83102_panel_desc j706f_boe_desc = {
 	},
 	.has_backlight = true,
 	.init_exits_sleep = true,
+	/* vendor LCM driver: reset 1, 2 ms, 0, 18 ms, 1, 8 ms; CKLP enabled */
+	.reset_low_ms = 18,
+	.noncont_clock = true,
 	.init = j706f_boe_init,
 };
 
@@ -1131,7 +1143,10 @@ static int hx83102_prepare(struct drm_panel *panel)
 	gpiod_set_value_cansleep(ctx->enable_gpio, 1);
 	usleep_range(1000, 2000);
 	gpiod_set_value_cansleep(ctx->enable_gpio, 0);
-	usleep_range(1000, 2000);
+	if (ctx->desc->reset_low_ms)
+		msleep(ctx->desc->reset_low_ms);
+	else
+		usleep_range(1000, 2000);
 	gpiod_set_value_cansleep(ctx->enable_gpio, 1);
 	usleep_range(6000, 10000);
 
@@ -1314,6 +1329,8 @@ static int hx83102_probe(struct mipi_dsi_device *dsi)
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
 					  MIPI_DSI_MODE_LPM;
+	if (desc->noncont_clock)
+		dsi->mode_flags |= MIPI_DSI_CLOCK_NON_CONTINUOUS;
 	ctx->desc = desc;
 	ctx->dsi = dsi;
 	ret = hx83102_panel_add(ctx);
