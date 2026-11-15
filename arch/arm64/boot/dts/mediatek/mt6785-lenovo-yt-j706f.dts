@@ -252,17 +252,18 @@
 			/* panel and touch logic ("vddi 1.8V" in the vendor driver) */
 			mt6360_vtp_ldo_reg: ldo2 {
 				regulator-name = "vtp";
-				regulator-min-microvolt = <1200000>;
-				regulator-max-microvolt = <3600000>;
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
 				regulator-allowed-modes = <MT6360_OPMODE_NORMAL
 							   MT6360_OPMODE_LP>;
 				regulator-always-on;
 			};
 
+			/* SDIO I/O for the MT7663: 1.8 V only, as on the stock DT */
 			mt6360_vmc_ldo_reg: ldo3 {
 				regulator-name = "vmc";
-				regulator-min-microvolt = <1200000>;
-				regulator-max-microvolt = <3600000>;
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
 				regulator-allowed-modes = <MT6360_OPMODE_NORMAL
 							   MT6360_OPMODE_LP>;
 			};
@@ -368,6 +369,21 @@
 };
 
 &mt6359_vcore_buck_reg {
+	regulator-always-on;
+};
+
+/*
+ * The stock overlay keeps vcn18 and vio18 always on (1.8 V); the MT7663
+ * stops answering on SDIO once the regulator core switches vcn18 off as
+ * unused.
+ */
+&mt6359_vcn18_ldo_reg {
+	regulator-always-on;
+};
+
+&mt6359_vio18_ldo_reg {
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <1800000>;
 	regulator-always-on;
 };
 
