@@ -68,15 +68,6 @@
 	 * ramoops node here only fails with "already initialized".
 	 */
 
-	/* MT7663 Wi-Fi/BT enable line (stock: GPIO99, low = off) */
-	wifi_pwrseq: wifi-pwrseq {
-		compatible = "mmc-pwrseq-simple";
-		reset-gpios = <&pio 99 GPIO_ACTIVE_LOW>;
-		post-power-on-delay-ms = <100>;
-		pinctrl-names = "default";
-		pinctrl-0 = <&wifi_pwrseq_pins>;
-	};
-
 	/* needed by Little Kernel */
 	scp {
 		compatible = "mediatek,scp";
@@ -140,7 +131,7 @@
 /*
  * i2c5: the MT6360 (same wiring as the reference design: PMU IRQ GPIO16,
  * Type-C IRQ GPIO7) and the LM36274-class backlight + LCD bias at 0x11
- * (KTZ8864A or a second-source clone; BL_EN GPIO73).
+ * (KTZ8864A or a second-source clone).
  */
 &i2c5 {
 	clock-frequency = <400000>;
@@ -151,8 +142,12 @@
 	backlight-bias@11 {
 		compatible = "ti,lm36274";
 		reg = <0x11>;
-		enable-gpios = <&pio 73 GPIO_ACTIVE_HIGH>;
-		/* LCD bias ENP/ENN stay high, as LK leaves them */
+		/*
+		 * No enable GPIO: GPIO73, "GPIO_LCD_BL_EN" in the vendor DWS, is
+		 * CONN_MIPI5_SCLK on this board (stock mt_gpio). Brightness also
+		 * goes through DISP_PWM on GPIO42 (mode 1 on stock).
+		 * LCD bias ENP (GPIO23) and ENN (GPIO202) stay high, as on stock.
+		 */
 		pinctrl-names = "default";
 		pinctrl-0 = <&backlight_pins>;
 
@@ -262,6 +257,7 @@
 			/* SDIO I/O for the MT7663: 1.8 V only, as on the stock DT */
 			mt6360_vmc_ldo_reg: ldo3 {
 				regulator-name = "vmc";
+				regulator-always-on;
 				regulator-min-microvolt = <1800000>;
 				regulator-max-microvolt = <1800000>;
 				regulator-allowed-modes = <MT6360_OPMODE_NORMAL
@@ -270,6 +266,7 @@
 
 			mt6360_vmch_ldo_reg: ldo5 {
 				regulator-name = "vmch";
+				regulator-always-on;
 				regulator-min-microvolt = <2700000>;
 				regulator-max-microvolt = <3600000>;
 				regulator-allowed-modes = <MT6360_OPMODE_NORMAL
@@ -359,12 +356,16 @@
 	no-sd;
 	sd-uhs-sdr50;
 	sd-uhs-sdr104;
-	mmc-pwrseq = <&wifi_pwrseq>;
 	vmmc-supply = <&mt6360_vmch_ldo_reg>;
 	vqmmc-supply = <&mt6360_vmc_ldo_reg>;
+	/*
+	 * The MT7663 stays powered and enabled (GPIO99 high) from boot, as on
+	 * stock Android, where GPIO99 stays high even with Wi-Fi off; toggling
+	 * it through an mmc-pwrseq left the chip silent (CMD5 timeouts).
+	 */
 	pinctrl-names = "default", "state_uhs";
-	pinctrl-0 = <&mmc1_pins>;
-	pinctrl-1 = <&mmc1_pins>;
+	pinctrl-0 = <&mmc1_pins>, <&wifi_enable_pins>;
+	pinctrl-1 = <&mmc1_pins>, <&wifi_enable_pins>;
 	status = "okay";
 };
 
@@ -498,10 +499,10 @@
 		};
 	};
 
-	wifi_pwrseq_pins: wifi-pwrseq-pins {
+	wifi_enable_pins: wifi-enable-pins {
 		pins-enable {
 			pinmux = <PINMUX_GPIO99__FUNC_GPIO99>;
-			output-low;
+			output-high;
 		};
 	};
 };
