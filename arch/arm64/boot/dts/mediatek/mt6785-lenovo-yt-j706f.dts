@@ -2,10 +2,10 @@
 /*
  * Lenovo Yoga Tab 11 (YT-J706F), MediaTek MT6785 (Helio G90T).
  *
- * First bring-up stage: the bootloader's framebuffer, pstore, the
- * watchdog, USB in peripheral mode, UFS, the PMIC and its keys, the GPU
- * and the fuel gauge. Panel, touch, Wi-Fi, audio and the charger come
- * later. Board facts: Lenovomarchy docs/hardware/{INVENTORY,BOARD}.md.
+ * Bring-up: the bootloader's framebuffer, the watchdog, USB in
+ * peripheral mode, UFS, the PMICs (MT6359, MT6360 with charger and Type-C),
+ * the GPU, the fuel gauge, microSD, the MT7663 Wi-Fi/BT on SDIO and the
+ * LM36274-class backlight and LCD bias. Panel, touch and audio come later. Board facts: Lenovomarchy docs/hardware/{INVENTORY,BOARD}.md.
  */
 
 /dts-v1/;
@@ -13,6 +13,8 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/regulator/mediatek,mt6360-regulator.h>
+#include <dt-bindings/usb/pd.h>
 
 #include "mt6785.dtsi"
 #include "mt6359.dtsi"
@@ -65,6 +67,15 @@
 	 * read a failed Linux boot's console and the other way round. A
 	 * ramoops node here only fails with "already initialized".
 	 */
+
+	/* MT7663 Wi-Fi/BT enable line (stock: GPIO99, low = off) */
+	wifi_pwrseq: wifi-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		reset-gpios = <&pio 99 GPIO_ACTIVE_LOW>;
+		post-power-on-delay-ms = <100>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&wifi_pwrseq_pins>;
+	};
 
 	/* needed by Little Kernel */
 	scp {
@@ -126,12 +137,234 @@
 	};
 };
 
+/*
+ * i2c5: the MT6360 (same wiring as the reference design: PMU IRQ GPIO16,
+ * Type-C IRQ GPIO7) and the LM36274-class backlight + LCD bias at 0x11
+ * (KTZ8864A or a second-source clone; BL_EN GPIO73).
+ */
+&i2c5 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c5_pins>;
+	status = "okay";
+
+	backlight-bias@11 {
+		compatible = "ti,lm36274";
+		reg = <0x11>;
+		enable-gpios = <&pio 73 GPIO_ACTIVE_HIGH>;
+		/* LCD bias ENP/ENN stay high, as LK leaves them */
+		pinctrl-names = "default";
+		pinctrl-0 = <&backlight_pins>;
+
+		regulators {
+			compatible = "ti,lm36274-regulator";
+
+			vboost {
+				regulator-name = "backlight_vboost";
+				regulator-min-microvolt = <4000000>;
+				regulator-max-microvolt = <7150000>;
+				regulator-always-on;
+			};
+
+			/* the vendor driver sets both to 5.8 V */
+			lcd_vpos: vpos {
+				regulator-name = "lcd_vpos";
+				regulator-min-microvolt = <5800000>;
+				regulator-max-microvolt = <5800000>;
+			};
+
+			lcd_vneg: vneg {
+				regulator-name = "lcd_vneg";
+				regulator-min-microvolt = <5800000>;
+				regulator-max-microvolt = <5800000>;
+			};
+		};
+
+		backlight: backlight {
+			compatible = "ti,lm36274-backlight";
+
+			led {
+				default-brightness = <800>;
+				led-sources = <0 1 2>;
+				max-brightness = <2047>;
+				ti,exponential-mode;
+				ti,ovp-microvolt = <29000000>;
+			};
+		};
+	};
+
+	pmic@34 {
+		compatible = "mediatek,mt6360";
+		reg = <0x34>;
+		interrupts-extended = <&pio 16 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "IRQB";
+		interrupt-controller;
+		#interrupt-cells = <1>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&mt6360_pins>;
+
+		adc {
+			compatible = "mediatek,mt6360-adc";
+			#io-channel-cells = <1>;
+		};
+
+		charger {
+			compatible = "mediatek,mt6360-chg";
+			richtek,vinovp-microvolt = <14500000>;
+
+			otg_vbus_regulator: usb-otg-vbus-regulator {
+				regulator-name = "usb-otg-vbus";
+				regulator-min-microvolt = <4425000>;
+				regulator-max-microvolt = <5825000>;
+			};
+		};
+
+		regulator {
+			compatible = "mediatek,mt6360-regulator";
+			LDO_VIN3-supply = <&mt6360_vdram1_reg>;
+
+			buck1 {
+				regulator-name = "vapu";
+				regulator-min-microvolt = <300000>;
+				regulator-max-microvolt = <1300000>;
+				regulator-allowed-modes = <MT6360_OPMODE_NORMAL
+							   MT6360_OPMODE_LP
+							   MT6360_OPMODE_ULP>;
+			};
+
+			mt6360_vdram1_reg: buck2 {
+				regulator-name = "vdram1";
+				regulator-min-microvolt = <300000>;
+				regulator-max-microvolt = <1300000>;
+				regulator-allowed-modes = <MT6360_OPMODE_NORMAL
+							   MT6360_OPMODE_LP
+							   MT6360_OPMODE_ULP>;
+			};
+
+			mt6360_vfp_ldo_reg: ldo1 {
+				regulator-name = "vfp";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <3600000>;
+				regulator-allowed-modes = <MT6360_OPMODE_NORMAL
+							   MT6360_OPMODE_LP>;
+			};
+
+			/* panel and touch logic ("vddi 1.8V" in the vendor driver) */
+			mt6360_vtp_ldo_reg: ldo2 {
+				regulator-name = "vtp";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <3600000>;
+				regulator-allowed-modes = <MT6360_OPMODE_NORMAL
+							   MT6360_OPMODE_LP>;
+				regulator-always-on;
+			};
+
+			mt6360_vmc_ldo_reg: ldo3 {
+				regulator-name = "vmc";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <3600000>;
+				regulator-allowed-modes = <MT6360_OPMODE_NORMAL
+							   MT6360_OPMODE_LP>;
+			};
+
+			mt6360_vmch_ldo_reg: ldo5 {
+				regulator-name = "vmch";
+				regulator-min-microvolt = <2700000>;
+				regulator-max-microvolt = <3600000>;
+				regulator-allowed-modes = <MT6360_OPMODE_NORMAL
+							   MT6360_OPMODE_LP>;
+			};
+
+			ldo6 {
+				regulator-name = "vmddr";
+				regulator-min-microvolt = <500000>;
+				regulator-max-microvolt = <2100000>;
+				regulator-allowed-modes = <MT6360_OPMODE_NORMAL
+							   MT6360_OPMODE_LP>;
+				regulator-always-on;
+			};
+
+			ldo7 {
+				regulator-name = "vdram2";
+				regulator-min-microvolt = <500000>;
+				regulator-max-microvolt = <2100000>;
+				regulator-allowed-modes = <MT6360_OPMODE_NORMAL
+							   MT6360_OPMODE_LP>;
+				regulator-always-on;
+			};
+		};
+
+		/* No role switch yet: USB stays a peripheral for the Mac. */
+		tcpc {
+			compatible = "mediatek,mt6360-tcpc";
+			interrupts-extended = <&pio 7 IRQ_TYPE_EDGE_FALLING>;
+			interrupt-names = "PD_IRQB";
+			vbus-supply = <&otg_vbus_regulator>;
+
+			connector {
+				compatible = "usb-c-connector";
+				label = "USB-C";
+				data-role = "dual";
+				power-role = "dual";
+				try-power-role = "sink";
+				op-sink-microwatt = <10000000>;
+				source-pdos = <PDO_FIXED(5000, 1500,
+							 PDO_FIXED_DUAL_ROLE |
+							 PDO_FIXED_DATA_SWAP)>;
+				sink-pdos = <PDO_FIXED(5000, 2000,
+						       PDO_FIXED_DUAL_ROLE |
+						       PDO_FIXED_DATA_SWAP)>;
+			};
+		};
+	};
+};
+
 &mfg {
 	domain-supply = <&mt6359_vpu_buck_reg>;
 };
 
 &mfg_async {
 	domain-supply = <&mt6359_vgpu11_buck_reg>;
+};
+
+/* microSD (stock: mmc0 here, unlike begonia; card detect GPIO8) */
+&mmc0 {
+	bus-width = <4>;
+	cd-gpios = <&pio 8 GPIO_ACTIVE_HIGH>;
+	max-frequency = <200000000>;
+	cap-sd-highspeed;
+	disable-wp;
+	no-mmc;
+	no-sdio;
+	sd-uhs-sdr50;
+	sd-uhs-sdr104;
+	vmmc-supply = <&mt6360_vmch_ldo_reg>;
+	vqmmc-supply = <&mt6360_vfp_ldo_reg>;
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&mmc0_pins>;
+	pinctrl-1 = <&mmc0_pins>;
+	status = "okay";
+};
+
+/* MT7663 Wi-Fi (function 1) and Bluetooth (function 2) on SDIO */
+&mmc1 {
+	bus-width = <4>;
+	max-frequency = <200000000>;
+	cap-sd-highspeed;
+	cap-sdio-irq;
+	keep-power-in-suspend;
+	non-removable;
+	no-mmc;
+	no-sd;
+	sd-uhs-sdr50;
+	sd-uhs-sdr104;
+	mmc-pwrseq = <&wifi_pwrseq>;
+	vmmc-supply = <&mt6360_vmch_ldo_reg>;
+	vqmmc-supply = <&mt6360_vmc_ldo_reg>;
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&mmc1_pins>;
+	pinctrl-1 = <&mmc1_pins>;
+	status = "okay";
 };
 
 &mt6359_vcore_buck_reg {
@@ -172,11 +405,87 @@
 };
 
 &pio {
+	backlight_pins: backlight-pins {
+		pins-bias-en {
+			pinmux = <PINMUX_GPIO23__FUNC_GPIO23>,
+				 <PINMUX_GPIO202__FUNC_GPIO202>;
+			output-high;
+		};
+	};
+
 	i2c3_pins: i2c3-pins {
 		pins-bus {
 			pinmux = <PINMUX_GPIO55__FUNC_SCL3>,
 				 <PINMUX_GPIO56__FUNC_SDA3>;
 			bias-pull-up;
+		};
+	};
+
+	i2c5_pins: i2c5-pins {
+		pins-bus {
+			pinmux = <PINMUX_GPIO28__FUNC_SCL5>,
+				 <PINMUX_GPIO29__FUNC_SDA5>;
+			bias-pull-up;
+		};
+	};
+
+	mmc0_pins: mmc0-pins {
+		pins-cmd-dat {
+			pinmux = <PINMUX_GPIO167__FUNC_MSDC0_CMD>,
+				 <PINMUX_GPIO168__FUNC_MSDC0_DAT0>,
+				 <PINMUX_GPIO172__FUNC_MSDC0_DAT1>,
+				 <PINMUX_GPIO169__FUNC_MSDC0_DAT2>,
+				 <PINMUX_GPIO177__FUNC_MSDC0_DAT3>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <8>;
+			input-enable;
+		};
+
+		pins-clk {
+			pinmux = <PINMUX_GPIO176__FUNC_MSDC0_CLK>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <8>;
+		};
+
+		/* stock "pins_shift": a level shifter enable, held low */
+		pins-shift {
+			pinmux = <PINMUX_GPIO47__FUNC_GPIO47>;
+			output-low;
+		};
+	};
+
+	mmc1_pins: mmc1-pins {
+		pins-cmd-dat {
+			pinmux = <PINMUX_GPIO135__FUNC_MSDC1_CMD>,
+				 <PINMUX_GPIO137__FUNC_MSDC1_DAT0>,
+				 <PINMUX_GPIO139__FUNC_MSDC1_DAT1>,
+				 <PINMUX_GPIO138__FUNC_MSDC1_DAT2>,
+				 <PINMUX_GPIO136__FUNC_MSDC1_DAT3>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <8>;
+			input-enable;
+		};
+
+		pins-clk {
+			pinmux = <PINMUX_GPIO134__FUNC_MSDC1_CLK>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <8>;
+		};
+	};
+
+	mt6360_pins: mt6360-pins {
+		pins-interrupt {
+			pinmux = <PINMUX_GPIO7__FUNC_GPIO7>,
+				 <PINMUX_GPIO16__FUNC_GPIO16>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+
+	wifi_pwrseq_pins: wifi-pwrseq-pins {
+		pins-enable {
+			pinmux = <PINMUX_GPIO99__FUNC_GPIO99>;
+			output-low;
 		};
 	};
 };
