@@ -1,0 +1,244 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Lenovo Yoga Tab 11 (YT-J706F), MediaTek MT6785 (Helio G90T).
+ *
+ * First bring-up stage: the bootloader's framebuffer, pstore, the
+ * watchdog, USB in peripheral mode, UFS, the PMIC and its keys, the GPU
+ * and the fuel gauge. Panel, touch, Wi-Fi, audio and the charger come
+ * later. Board facts: Lenovomarchy docs/hardware/{INVENTORY,BOARD}.md.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+#include "mt6785.dtsi"
+#include "mt6359.dtsi"
+
+/ {
+	model = "Lenovo Yoga Tab 11 (YT-J706F)";
+	compatible = "lenovo,yt-j706f", "mediatek,mt6785";
+	chassis-type = "tablet";
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* needed by Little Kernel */
+		bootargs = "";
+
+		/*
+		 * The panel as LK left it: 1200x2000, BGRA8888 in memory, lines
+		 * of 1216 pixels. LK passes this base (atag,videolfb-fb_base)
+		 * and reserves the region itself (mblock-16-framebuffer): a
+		 * reserved-memory node of ours over it makes LK's
+		 * reserved_memory_conflict_check hang (seen on the unit).
+		 */
+		framebuffer0: framebuffer@7cf50000 {
+			compatible = "simple-framebuffer";
+			reg = <0 0x7cf50000 0 (4864 * 2000)>;
+			width = <1200>;
+			height = <2000>;
+			stride = <4864>;
+			format = "a8r8g8b8";
+		};
+	};
+
+	/*
+	 * needed by Little Kernel, which fills it with its own mblock-*
+	 * nodes (framebuffer, pstore, TEE, SCP...). Do not add regions LK
+	 * already manages: it stops in reserved_memory_conflict_check.
+	 */
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+	};
+
+	/*
+	 * pstore needs no node: LK passes the stock ramoops layout on the
+	 * command line (ramoops.mem_address=0x4d010000, 896 KiB, console 256
+	 * KiB, pmsg 64 KiB, records 4 KiB), which also lets the Android slot
+	 * read a failed Linux boot's console and the other way round. A
+	 * ramoops node here only fails with "already initialized".
+	 */
+
+	/* needed by Little Kernel */
+	scp {
+		compatible = "mediatek,scp";
+	};
+};
+
+&cci {
+	proc-supply = <&mt6359_vproc2_buck_reg>;
+};
+
+&cpu0 {
+	proc-supply = <&mt6359_vproc2_buck_reg>;
+};
+
+&cpu1 {
+	proc-supply = <&mt6359_vproc2_buck_reg>;
+};
+
+&cpu2 {
+	proc-supply = <&mt6359_vproc2_buck_reg>;
+};
+
+&cpu3 {
+	proc-supply = <&mt6359_vproc2_buck_reg>;
+};
+
+&cpu4 {
+	proc-supply = <&mt6359_vproc2_buck_reg>;
+};
+
+&cpu5 {
+	proc-supply = <&mt6359_vproc2_buck_reg>;
+};
+
+&cpu6 {
+	proc-supply = <&mt6359_vproc1_buck_reg>;
+};
+
+&cpu7 {
+	proc-supply = <&mt6359_vproc1_buck_reg>;
+};
+
+&gpu {
+	mali-supply = <&mt6359_vgpu11_buck_reg>;
+	status = "okay";
+};
+
+/* TI bq27541 fuel gauge (stock: i2c3 0x55) */
+&i2c3 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c3_pins>;
+	status = "okay";
+
+	fuel-gauge@55 {
+		compatible = "ti,bq27541";
+		reg = <0x55>;
+	};
+};
+
+&mfg {
+	domain-supply = <&mt6359_vpu_buck_reg>;
+};
+
+&mfg_async {
+	domain-supply = <&mt6359_vgpu11_buck_reg>;
+};
+
+&mt6359_vcore_buck_reg {
+	regulator-always-on;
+};
+
+&mt6359_vgpu11_buck_reg {
+	regulator-name = "vgpu";
+	regulator-min-microvolt = <550000>;
+	regulator-max-microvolt = <875000>;
+
+	regulator-coupled-with = <&mt6359_vpu_buck_reg>;
+	regulator-coupled-max-spread = <100000>;
+};
+
+&mt6359_vproc1_buck_reg {
+	regulator-name = "vproc_b";
+	regulator-always-on;
+};
+
+&mt6359_vproc2_buck_reg {
+	regulator-name = "vproc_l";
+	regulator-always-on;
+};
+
+&mt6359_vpu_buck_reg {
+	regulator-name = "vsram_gpu";
+	regulator-min-microvolt = <850000>;
+	regulator-max-microvolt = <975000>;
+
+	regulator-coupled-with = <&mt6359_vgpu11_buck_reg>;
+	regulator-coupled-max-spread = <100000>;
+};
+
+&mt6359_vsram_others_ldo_reg {
+	regulator-name = "vsram_core";
+	regulator-always-on;
+};
+
+&pio {
+	i2c3_pins: i2c3-pins {
+		pins-bus {
+			pinmux = <PINMUX_GPIO55__FUNC_SCL3>,
+				 <PINMUX_GPIO56__FUNC_SDA3>;
+			bias-pull-up;
+		};
+	};
+};
+
+&pmic {
+	/* stock: EINT 193, level high, as on the reference design */
+	interrupts-extended = <&pio 193 IRQ_TYPE_LEVEL_HIGH>;
+
+	keys {
+		compatible = "mediatek,mt6359-keys";
+
+		power {
+			linux,keycodes = <KEY_POWER>;
+			wakeup-source;
+		};
+
+		/* the PMIC "home" key is Volume Up on this tablet */
+		home {
+			linux,keycodes = <KEY_VOLUMEUP>;
+		};
+	};
+};
+
+/*
+ * Peripheral only for now: USB networking and serial to the Mac. The
+ * MT6360 Type-C controller and host mode come with the charger.
+ */
+/*
+ * MT8789 (the Wi-Fi-only MT6785, "wifi only IC, no modem" in LK's log): the
+ * modem domain never powers on, and its timeout (-110) made the whole power
+ * controller fail its probe on the first boot.
+ */
+&spm {
+	/delete-node/ power-domain@4;
+};
+
+&ssusb {
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
+	vusb33-supply = <&mt6359_vusb_ldo_reg>;
+	status = "okay";
+};
+
+&u3phy {
+	status = "okay";
+};
+
+&ufshci {
+	mediatek,ufs-disable-mcq;
+	mediatek,ufs-support-va09;
+
+	va09-supply = <&mt6359_va09_ldo_reg>;
+	vcc-supply = <&mt6359_vemc_ldo_reg>;
+	vccq2-supply = <&mt6359_vufs_ldo_reg>;
+
+	status = "okay";
+};
+
+&ufsphy {
+	status = "okay";
+};
+
+&watchdog {
+	status = "okay";
+};
