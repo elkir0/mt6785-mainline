@@ -88,12 +88,6 @@ struct hx83102_panel_desc {
 	 */
 	bool init_exits_sleep;
 
-	/**
-	 * @noncont_clock: the panel needs the DSI clock lane to drop to LP
-	 * between lines (non-continuous clock), as its bootloader sets it
-	 */
-	bool noncont_clock;
-
 	/** @reset_low_ms: reset pulse length, if longer than the default */
 	unsigned int reset_low_ms;
 
@@ -1056,7 +1050,6 @@ static const struct hx83102_panel_desc j706f_boe_desc = {
 	.init_exits_sleep = true,
 	/* vendor LCM driver: reset 1, 2 ms, 0, 18 ms, 1, 8 ms; CKLP enabled */
 	.reset_low_ms = 18,
-	.noncont_clock = true,
 	.init = j706f_boe_init,
 };
 
@@ -1147,18 +1140,6 @@ static int hx83102_prepare(struct drm_panel *panel)
 	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
 	if (dsi_ctx.accum_err)
 		goto poweroff;
-
-	{
-		/* bring-up: what the panel reports after init */
-		u8 fmt = 0, pwr = 0, madctl = 0;
-		int r1, r2, r3;
-
-		r1 = mipi_dsi_dcs_get_pixel_format(dsi, &fmt);
-		r2 = mipi_dsi_dcs_get_power_mode(dsi, &pwr);
-		r3 = mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_ADDRESS_MODE, &madctl, 1);
-		dev_err(&dsi->dev, "panel reports: pixel_format=%#x (%d) power_mode=%#x (%d) address_mode=%#x (%d)\n",
-			fmt, r1, pwr, r2, madctl, r3);
-	}
 
 	return 0;
 
@@ -1329,8 +1310,6 @@ static int hx83102_probe(struct mipi_dsi_device *dsi)
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
 					  MIPI_DSI_MODE_LPM;
-	if (desc->noncont_clock)
-		dsi->mode_flags |= MIPI_DSI_CLOCK_NON_CONTINUOUS;
 	ctx->desc = desc;
 	ctx->dsi = dsi;
 	ret = hx83102_panel_add(ctx);
