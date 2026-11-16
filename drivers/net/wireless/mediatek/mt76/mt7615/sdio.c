@@ -187,20 +187,23 @@ static int mt7663s_suspend(struct device *dev)
 	struct mt7615_dev *mdev = sdio_get_drvdata(func);
 	int err;
 
+	/* From here on, no firmware commands from the regulatory notifier */
+	mutex_lock(&mdev->mt76.mutex);
+	mdev->pm.suspended = true;
+	mutex_unlock(&mdev->mt76.mutex);
+
 	if (!test_bit(MT76_STATE_SUSPEND, &mdev->mphy.state) &&
 	    mt7615_firmware_offload(mdev)) {
-		int err;
-
 		err = mt76_connac_mcu_set_hif_suspend(&mdev->mt76, true, true);
 		if (err < 0)
-			return err;
+			goto err_resumed;
 	}
 
 	sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
 
 	err = mt7615_mcu_set_fw_ctrl(mdev);
 	if (err)
-		return err;
+		goto err_resumed;
 
 	mt76_worker_disable(&mdev->mt76.sdio.txrx_worker);
 	mt76_worker_disable(&mdev->mt76.sdio.status_worker);
@@ -212,6 +215,10 @@ static int mt7663s_suspend(struct device *dev)
 	mt76_tx_status_check(&mdev->mt76, true);
 
 	return 0;
+
+err_resumed:
+	mdev->pm.suspended = false;
+	return err;
 }
 
 static int mt7663s_resume(struct device *dev)
@@ -226,12 +233,14 @@ static int mt7663s_resume(struct device *dev)
 
 	err = mt7615_mcu_set_drv_ctrl(mdev);
 	if (err)
-		return err;
+		goto out;
 
 	if (!test_bit(MT76_STATE_SUSPEND, &mdev->mphy.state) &&
 	    mt7615_firmware_offload(mdev))
 		err = mt76_connac_mcu_set_hif_suspend(&mdev->mt76, false, true);
 
+out:
+	mdev->pm.suspended = false;
 	return err;
 }
 
