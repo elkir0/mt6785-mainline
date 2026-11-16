@@ -2512,7 +2512,11 @@ static int mt6785_afe_pcm_dev_probe(struct platform_device *pdev)
 	afe->irq_fs = mt6785_irq_fs;
 	afe->get_dai_fs = mt6785_get_dai_fs;
 	afe->get_memif_pbuf_size = mt6785_get_memif_pbuf_size;
-	afe->memif_32bit_supported = 1;
+	/*
+	 * HD_MODE 2 is not a 32-bit mode on this SoC: the memif then reads
+	 * 16-bit samples. S32_LE has to use the 24-bit mode, MSB aligned.
+	 */
+	afe->memif_32bit_supported = 0;
 
 	afe->runtime_resume = mt6785_afe_runtime_resume;
 	afe->runtime_suspend = mt6785_afe_runtime_suspend;
