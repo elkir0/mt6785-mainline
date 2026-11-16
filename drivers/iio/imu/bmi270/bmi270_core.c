@@ -22,6 +22,7 @@
 /* Checked to prevent sending incompatible firmware to BMI160 devices */
 #define BMI160_CHIP_ID_VAL				0xD1
 
+#define BMI220_CHIP_ID_VAL				0x26
 #define BMI260_CHIP_ID_VAL				0x27
 #define BMI270_CHIP_ID_VAL				0x24
 #define BMI270_CHIP_ID_MSK				GENMASK(7, 0)
@@ -142,6 +143,7 @@
 #define BMI270_RAW_TO_MICRO(raw, scale) \
 	((((raw) % (scale)) * MEGA) / scale)
 
+#define BMI220_INIT_DATA_FILE "bmi220-init-data.fw"
 #define BMI260_INIT_DATA_FILE "bmi260-init-data.fw"
 #define BMI270_INIT_DATA_FILE "bmi270-init-data.fw"
 
@@ -195,6 +197,13 @@ static const unsigned long bmi270_avail_scan_masks[] = {
 	 BIT(BMI270_SCAN_GYRO_Z)),
 	0
 };
+
+const struct bmi270_chip_info bmi220_chip_info = {
+	.name = "bmi220",
+	.chip_id = BMI220_CHIP_ID_VAL,
+	.fw_name = BMI220_INIT_DATA_FILE,
+};
+EXPORT_SYMBOL_NS_GPL(bmi220_chip_info, "IIO_BMI270");
 
 const struct bmi270_chip_info bmi260_chip_info = {
 	.name = "bmi260",
@@ -1475,7 +1484,9 @@ static int bmi270_validate_chip_id(struct bmi270_data *data)
 	if (chip_id != data->chip_info->chip_id)
 		dev_info(dev, "Unexpected chip id 0x%x", chip_id);
 
-	if (chip_id == bmi260_chip_info.chip_id)
+	if (chip_id == bmi220_chip_info.chip_id)
+		data->chip_info = &bmi220_chip_info;
+	else if (chip_id == bmi260_chip_info.chip_id)
 		data->chip_info = &bmi260_chip_info;
 	else if (chip_id == bmi270_chip_info.chip_id)
 		data->chip_info = &bmi270_chip_info;

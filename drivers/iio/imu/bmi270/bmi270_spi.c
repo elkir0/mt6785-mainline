@@ -66,12 +66,14 @@ static int bmi270_spi_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id bmi270_spi_id[] = {
+	{ "bmi220", (kernel_ulong_t)&bmi220_chip_info },
 	{ "bmi260", (kernel_ulong_t)&bmi260_chip_info },
 	{ "bmi270", (kernel_ulong_t)&bmi270_chip_info },
 	{ }
 };
 
 static const struct of_device_id bmi270_of_match[] = {
+	{ .compatible = "bosch,bmi220", .data = &bmi220_chip_info },
 	{ .compatible = "bosch,bmi260", .data = &bmi260_chip_info },
 	{ .compatible = "bosch,bmi270", .data = &bmi270_chip_info },
 	{ }
