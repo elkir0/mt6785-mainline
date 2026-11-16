@@ -420,12 +420,6 @@
  * unused.
  */
 &mipi_tx0 {
-	/*
-	 * HS TX amplitude as LK sets it (HSTX_LDO_REF_SEL 0xb); the default
-	 * 4600 uA (0x8) left the panel with a grey, folded picture while LP
-	 * commands still went through.
-	 */
-	drive-strength-microamp = <5200>;
 	status = "okay";
 };
 
