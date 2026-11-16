@@ -689,3 +689,5 @@
 &watchdog {
 	status = "okay";
 };
+
+#include "mt6785-lenovo-yt-j706f-audio.dtsi"
