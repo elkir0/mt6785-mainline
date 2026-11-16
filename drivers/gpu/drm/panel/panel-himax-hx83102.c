@@ -1027,12 +1027,19 @@ static const struct hx83102_panel_desc holitech_htf065h045_desc = {
 	.init = holitech_htf065h045_init,
 };
 
+/*
+ * The vendor drives the panel at 1044 Mbps per lane. At the 973 Mbps
+ * that the vendor porches alone would give, the per-line LP transition
+ * does not fit in HFP + HBP, the frame rate drops to ~53 Hz and the
+ * panel shows the picture repeated vertically. Run at the vendor rate
+ * and widen HFP so that the mode stays at 60 Hz.
+ */
 static const struct drm_display_mode j706f_boe_default_mode = {
-	.clock = 162256,
+	.clock = 174000,
 	.hdisplay = 1200,
-	.hsync_start = 1200 + 36,
-	.hsync_end = 1200 + 36 + 8,
-	.htotal = 1200 + 36 + 8 + 28,
+	.hsync_start = 1200 + 128,
+	.hsync_end = 1200 + 128 + 8,
+	.htotal = 1200 + 128 + 8 + 28,
 	.vdisplay = 2000,
 	.vsync_start = 2000 + 80,
 	.vsync_end = 2000 + 80 + 8,
