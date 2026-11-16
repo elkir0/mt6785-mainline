@@ -183,6 +183,17 @@
 };
 
 /*
+ * Motion/light sensor bus. Stock Android drives it from the SCP sensor hub
+ * (GPIO61/62 "SENSOR0_I2C"), but the pins also carry the AP's SCL1/SDA1.
+ */
+&i2c1 {
+	clock-frequency = <100000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c1_pins>;
+	status = "okay";
+};
+
+/*
  * TI bq27541 fuel gauge (stock: i2c3 0x55). The stock bus runs at the
  * vendor driver's default 100 kHz; at 400 kHz the gauge's second data byte
  * often reads back as 0xff.
@@ -543,6 +554,23 @@
 		};
 	};
 
+	spi2_pins: spi2-pins {
+		pins-bus {
+			pinmux = <PINMUX_GPIO63__FUNC_SPI2_MI>,
+				 <PINMUX_GPIO64__FUNC_SPI2_CSB>,
+				 <PINMUX_GPIO65__FUNC_SPI2_MO>,
+				 <PINMUX_GPIO66__FUNC_SPI2_CLK>;
+		};
+	};
+
+	i2c1_pins: i2c1-pins {
+		pins-bus {
+			pinmux = <PINMUX_GPIO61__FUNC_SCL1>,
+				 <PINMUX_GPIO62__FUNC_SDA1>;
+			bias-pull-up;
+		};
+	};
+
 	i2c3_pins: i2c3-pins {
 		pins-bus {
 			pinmux = <PINMUX_GPIO55__FUNC_SCL3>,
@@ -681,6 +709,27 @@
 		touchscreen-size-y = <2000>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&touch_pins>;
+	};
+};
+
+/*
+ * Bosch BMI220 accelerometer + gyroscope (chip id 0x26). Stock Android
+ * drives it from the SCP's SPI2; the same pins carry the AP's SPI2. The
+ * supplies are not described by the stock DT (the SCP owned the chip);
+ * the chip answers with the always-on 1.8 V VIO18, assumed for both.
+ */
+&spi2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi2_pins>;
+	mediatek,pad-select = <0>;
+	status = "okay";
+
+	imu@0 {
+		compatible = "bosch,bmi220";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+		vdd-supply = <&mt6359_vio18_ldo_reg>;
+		vddio-supply = <&mt6359_vio18_ldo_reg>;
 	};
 };
 
