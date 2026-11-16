@@ -72,6 +72,32 @@
 	scp {
 		compatible = "mediatek,scp";
 	};
+
+	/*
+	 * MT7663 Wi-Fi/BT power: GPIO158 switches the module's supply (the
+	 * stock kernel drives it high; with it low the chip never answers
+	 * on SDIO), GPIO99 is its PMU enable, raised once powered.
+	 */
+	wifi_vdd: regulator-wifi {
+		compatible = "regulator-fixed";
+		regulator-name = "wifi_vdd";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&pio 158 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <20000>;
+		vin-supply = <&mt6360_vmch_ldo_reg>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&wifi_power_pins>;
+	};
+
+	wifi_pwrseq: wifi-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		reset-gpios = <&pio 99 GPIO_ACTIVE_LOW>;
+		post-power-on-delay-ms = <50>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&wifi_enable_pins>;
+	};
 };
 
 &cci {
@@ -397,16 +423,12 @@
 	no-sd;
 	sd-uhs-sdr50;
 	sd-uhs-sdr104;
-	vmmc-supply = <&mt6360_vmch_ldo_reg>;
+	vmmc-supply = <&wifi_vdd>;
 	vqmmc-supply = <&mt6360_vmc_ldo_reg>;
-	/*
-	 * The MT7663 stays powered and enabled (GPIO99 high) from boot, as on
-	 * stock Android, where GPIO99 stays high even with Wi-Fi off; toggling
-	 * it through an mmc-pwrseq left the chip silent (CMD5 timeouts).
-	 */
+	mmc-pwrseq = <&wifi_pwrseq>;
 	pinctrl-names = "default", "state_uhs";
-	pinctrl-0 = <&mmc1_pins>, <&wifi_enable_pins>;
-	pinctrl-1 = <&mmc1_pins>, <&wifi_enable_pins>;
+	pinctrl-0 = <&mmc1_pins>;
+	pinctrl-1 = <&mmc1_pins>;
 	status = "okay";
 };
 
@@ -575,7 +597,12 @@
 	wifi_enable_pins: wifi-enable-pins {
 		pins-enable {
 			pinmux = <PINMUX_GPIO99__FUNC_GPIO99>;
-			output-high;
+		};
+	};
+
+	wifi_power_pins: wifi-power-pins {
+		pins-power {
+			pinmux = <PINMUX_GPIO158__FUNC_GPIO158>;
 		};
 	};
 };
