@@ -31,6 +31,8 @@ struct cs35l41_private {
 	struct regmap *regmap;
 	struct regulator_bulk_data supplies[CS35L41_NUM_SUPPLIES];
 	int irq;
+	/* IRQ disabled while the DSP hibernates */
+	bool hibernate_irq_off;
 	/* GPIO for /RST */
 	struct gpio_desc *reset_gpio;
 };

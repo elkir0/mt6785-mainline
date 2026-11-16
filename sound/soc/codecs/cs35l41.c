@@ -1404,6 +1404,16 @@ static int cs35l41_runtime_suspend(struct device *dev)
 	if (!cs35l41->dsp.preloaded || !cs35l41->dsp.cs_dsp.running)
 		return 0;
 
+	/*
+	 * Entering hibernation raises the amplifier's interrupt, and the IRQ
+	 * handler resumes the device: the amplifier would be woken up again
+	 * at once, every autosuspend period. Keep the IRQ off until the
+	 * device is resumed, as the vendor driver does. The handler takes a
+	 * runtime PM reference, so do not wait for it here.
+	 */
+	disable_irq_nosync(cs35l41->irq);
+	cs35l41->hibernate_irq_off = true;
+
 	wm_adsp_hibernate(&cs35l41->dsp, true);
 	cs35l41_enter_hibernate(dev, cs35l41->regmap, cs35l41->hw_cfg.bst_type);
 
@@ -1413,6 +1423,14 @@ static int cs35l41_runtime_suspend(struct device *dev)
 	return 0;
 }
 
+static void cs35l41_hibernate_irq_on(struct cs35l41_private *cs35l41)
+{
+	if (cs35l41->hibernate_irq_off) {
+		cs35l41->hibernate_irq_off = false;
+		enable_irq(cs35l41->irq);
+	}
+}
+
 static int cs35l41_runtime_resume(struct device *dev)
 {
 	struct cs35l41_private *cs35l41 = dev_get_drvdata(dev);
@@ -1420,14 +1438,18 @@ static int cs35l41_runtime_resume(struct device *dev)
 
 	dev_dbg(cs35l41->dev, "Runtime resume\n");
 
-	if (!cs35l41->dsp.preloaded || !cs35l41->dsp.cs_dsp.running)
+	if (!cs35l41->dsp.preloaded || !cs35l41->dsp.cs_dsp.running) {
+		cs35l41_hibernate_irq_on(cs35l41);
 		return 0;
+	}
 
 	regcache_cache_only(cs35l41->regmap, false);
 
 	ret = cs35l41_exit_hibernate(cs35l41->dev, cs35l41->regmap);
-	if (ret)
+	if (ret) {
+		cs35l41_hibernate_irq_on(cs35l41);
 		return ret;
+	}
 
 	/* Test key needs to be unlocked to allow the OTP settings to re-apply */
 	cs35l41_test_key_unlock(cs35l41->dev, cs35l41->regmap);
@@ -1435,6 +1457,7 @@ static int cs35l41_runtime_resume(struct device *dev)
 	cs35l41_test_key_lock(cs35l41->dev, cs35l41->regmap);
 
 	wm_adsp_hibernate(&cs35l41->dsp, false);
+	cs35l41_hibernate_irq_on(cs35l41);
 
 	if (ret) {
 		dev_err(cs35l41->dev, "Failed to restore register cache: %d\n", ret);
