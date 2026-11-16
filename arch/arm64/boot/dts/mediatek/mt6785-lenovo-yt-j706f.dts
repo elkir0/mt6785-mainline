@@ -394,6 +394,19 @@
 				sink-pdos = <PDO_FIXED(5000, 2000,
 						       PDO_FIXED_DUAL_ROLE |
 						       PDO_FIXED_DATA_SWAP)>;
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+
+						typec_con_hs: endpoint {
+							remote-endpoint = <&mtu3_hs_role_sw>;
+						};
+					};
+				};
 			};
 		};
 	};
@@ -733,10 +746,28 @@
 	};
 };
 
+/*
+ * USB-C through the MT6360 TCPC: TCPM sets the data role, so unplugging
+ * the cable disconnects the gadget (otherwise mtu3 believes a host is still
+ * attached and refuses system suspend). Peripheral until TCPM decides, for
+ * the USB network access at boot.
+ */
 &ssusb {
-	dr_mode = "peripheral";
+	dr_mode = "otg";
 	maximum-speed = "high-speed";
+	usb-role-switch;
+	role-switch-default-mode = "peripheral";
 	vusb33-supply = <&mt6359_vusb_ldo_reg>;
+	status = "okay";
+
+	port {
+		mtu3_hs_role_sw: endpoint {
+			remote-endpoint = <&typec_con_hs>;
+		};
+	};
+};
+
+&xhci {
 	status = "okay";
 };
 
