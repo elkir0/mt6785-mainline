@@ -1435,4 +1435,39 @@ config TOUCHSCREEN_HIMAX_HX83112B
 	  To compile this driver as a module, choose M here: the
 	  module will be called himax_hx83112b.
 
+config TOUCHSCREEN_HIMAX_HX83102
+	tristate
+	depends on DRM || !DRM
+
+config TOUCHSCREEN_HIMAX_HX83102_SPI
+	tristate "Himax HX83102 SPI (TDDI) touchscreen and pen"
+	depends on SPI_MASTER
+	select TOUCHSCREEN_HIMAX_HX83102
+	help
+	  Say Y here if you have a Himax HX83102 TDDI touchscreen and pen
+	  controller connected to your system via SPI.
+
+	  The controller has no firmware flash: its firmware is uploaded
+	  into the chip SRAM at every power-up. The firmware file
+	  (default himax/hx83102p.bin) must be present in /lib/firmware.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called himax_hx83102_spi.
+
+config TOUCHSCREEN_HIMAX_HX83102_KUNIT_TEST
+	tristate "KUnit tests for the Himax HX83102 driver" if !KUNIT_ALL_TESTS
+	depends on TOUCHSCREEN_HIMAX_HX83102 && KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  This builds unit tests for the Himax HX83102 event parser and
+	  firmware layout parser.
+
+	  For more information on KUnit and unit tests in general,
+	  please refer to the KUnit documentation in
+	  Documentation/dev-tools/kunit/.
+
+	  If in doubt, say "N".
+
 endif
