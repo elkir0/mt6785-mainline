@@ -19,6 +19,7 @@ description: |
 properties:
   compatible:
     enum:
+      - bosch,bmi220
       - bosch,bmi260
       - bosch,bmi270
 
