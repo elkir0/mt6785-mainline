@@ -332,6 +332,41 @@
 			output-high;
 		};
 	};
+
+	/* I2C9 bus (GPIO151 SDA9, GPIO152 SCL9: "I2C_APPM" in the GPIO table) */
+	i2c9_pins: i2c9-pins {
+		pins-bus {
+			pinmux = <PINMUX_GPIO151__FUNC_SDA9>,
+				 <PINMUX_GPIO152__FUNC_SCL9>;
+			bias-disable;
+		};
+	};
+
+	/* AS33970 enable (GPIO49) and active-low reset (GPIO122), stock DT */
+	as33970_pins: as33970-pins {
+		pins-enable {
+			pinmux = <PINMUX_GPIO49__FUNC_GPIO49>;
+			output-high;
+		};
+
+		pins-reset {
+			pinmux = <PINMUX_GPIO122__FUNC_GPIO122>;
+			output-high;
+		};
+	};
+};
+
+/*
+ * Synaptics AS33970 voice processor (microphones) at 0x41 on i2c9 (stock DT:
+ * 1 MHz bus, enable GPIO49, reset GPIO122, interrupt GPIO12). It has no
+ * firmware of its own: the host loads it through its ROM boot loader. No
+ * driver yet: enable and reset are held high so a loader can reach the ROM.
+ */
+&i2c9 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c9_pins>, <&as33970_pins>;
+	status = "okay";
 };
 
 /*
