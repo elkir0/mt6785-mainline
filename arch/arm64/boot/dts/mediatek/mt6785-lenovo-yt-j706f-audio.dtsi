@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (GPL-2.0 OR MIT)
 /*
  * Audio device tree for the Lenovo Yoga Tab 11 (YT-J706F, MediaTek MT6785):
- * AFE, MT6359 PMIC codec/accdet, sound card, and 4x Cirrus Logic CS35L41
+ * AFE, MT6359 PMIC codec, sound card, and 4x Cirrus Logic CS35L41
  * speaker amplifiers on i2c6.
  */
 
@@ -370,20 +370,15 @@
 };
 
 /*
- * MT6359 PMIC accessory detection (ACCDET), adapted from begonia (0009 patch):
- * node must be named "accdet" as a child of &pmic.
+ * The tablet has no 3.5 mm jack: the stock DT enables the PMIC accessory
+ * detection anyway (reference design), but nothing is wired to it. Keep the
+ * node disabled so the MT6359 MFD skips its accdet cell, and give the sound
+ * card no "Headset Jack".
  */
 &pmic {
-	accdet: accdet {
+	accdet {
 		compatible = "mediatek,mt6359-accdet";
-		mediatek,mic-vol = <8>;
-		mediatek,plugout-debounce = <1>;
-		mediatek,mic-mode = <2>;
-		mediatek,pwm-deb-setting = <0x500 0x500 1 0x1f0
-					    0x800 0x800 0x20 0x44
-					    0x4 0x1
-					    0x5 0x3 0x3 0x5 0xe>;
-		mediatek,three-key-thr = <0 80 220 400>;
+		status = "disabled";
 	};
 };
 
@@ -392,7 +387,6 @@
 		compatible = "mediatek,mt6785_mt6359";
 		model = "mt6785_mt6359";
 		mediatek,platform = <&afe>;
-		mediatek,accdet = <&accdet>;
 		mediatek,speaker-codecs = <&spk1>, <&spk2>, <&spk3>, <&spk4>;
 		mediatek,speaker-i2s = "I2S1";
 
