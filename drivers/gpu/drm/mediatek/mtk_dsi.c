@@ -194,6 +194,7 @@ struct mtk_dsi_driver_data {
 	bool has_size_ctl;
 	bool cmdq_long_packet_ctl;
 	bool support_per_frame_lp;
+	bool short_packet_before_video;
 };
 
 struct mtk_dsi {
@@ -221,6 +222,7 @@ struct mtk_dsi {
 	int refcount;
 	bool enabled;
 	bool lanes_ready;
+	bool long_packet_sent;
 	u32 irq_data;
 	wait_queue_head_t irq_wait_queue;
 	const struct mtk_dsi_driver_data *driver_data;
@@ -787,11 +789,14 @@ static void mtk_dsi_poweroff(struct mtk_dsi *dsi)
 	dsi->lanes_ready = false;
 }
 
+static void mtk_dsi_end_long_packet(struct mtk_dsi *dsi);
+
 static void mtk_output_dsi_enable(struct mtk_dsi *dsi)
 {
 	if (dsi->enabled)
 		return;
 
+	mtk_dsi_end_long_packet(dsi);
 	mtk_dsi_set_mode(dsi);
 	mtk_dsi_start(dsi);
 
@@ -1074,6 +1079,8 @@ static void mtk_dsi_cmdq(struct mtk_dsi *dsi, const struct mipi_dsi_msg *msg)
 	else
 		config = (msg->tx_len > 2) ? LONG_PACKET : SHORT_PACKET;
 
+	dsi->long_packet_sent = !MTK_DSI_HOST_IS_READ(type) && msg->tx_len > 2;
+
 	if (!(msg->flags & MIPI_DSI_MSG_USE_LPM))
 		config |= HSTX;
 
@@ -1114,6 +1121,32 @@ static ssize_t mtk_dsi_host_send_cmd(struct mtk_dsi *dsi,
 		return -ETIME;
 	else
 		return 0;
+}
+
+/*
+ * After a long packet has gone through the command queue, the MT6785 DSI
+ * engine pulls 1.5 input pixels for every pixel it sends in video mode:
+ * each line carries a line and a half of the picture and the engine
+ * underruns for the last third of every frame, until a short packet goes
+ * out again (measured on the Lenovo YT-J706F, whose panel init and DCS
+ * backlight are long writes). Close any long-packet run with a DCS NOP
+ * before video mode starts.
+ */
+static void mtk_dsi_end_long_packet(struct mtk_dsi *dsi)
+{
+	static const u8 nop = MIPI_DCS_NOP;
+	const struct mipi_dsi_msg msg = {
+		.type = MIPI_DSI_DCS_SHORT_WRITE,
+		.tx_buf = &nop,
+		.tx_len = 1,
+		.flags = MIPI_DSI_MSG_USE_LPM,
+	};
+
+	if (!dsi->driver_data->short_packet_before_video || !dsi->long_packet_sent)
+		return;
+
+	if (mtk_dsi_host_send_cmd(dsi, &msg, CMD_DONE_INT_FLAG))
+		dev_warn(dsi->dev, "failed to send the NOP closing a long packet\n");
 }
 
 static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
@@ -1179,6 +1212,7 @@ static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
 
 restore_dsi_mode:
 	if (dsi_mode & MODE) {
+		mtk_dsi_end_long_packet(dsi);
 		mtk_dsi_set_mode(dsi);
 		mtk_dsi_start(dsi);
 	}
@@ -1278,6 +1312,15 @@ static const struct mtk_dsi_driver_data mt2701_dsi_driver_data = {
 	.reg_shadow_dbg_off = 0x190
 };
 
+static const struct mtk_dsi_driver_data mt6785_dsi_driver_data = {
+	.reg_cmdq_off = 0x200,
+	.reg_vm_cmd_off = 0x130,
+	.reg_shadow_dbg_off = 0x190,
+	.has_shadow_ctl = true,
+	.has_size_ctl = true,
+	.short_packet_before_video = true,
+};
+
 static const struct mtk_dsi_driver_data mt8183_dsi_driver_data = {
 	.reg_cmdq_off = 0x200,
 	.reg_vm_cmd_off = 0x130,
@@ -1307,6 +1350,7 @@ static const struct mtk_dsi_driver_data mt8188_dsi_driver_data = {
 static const struct of_device_id mtk_dsi_of_match[] = {
 	{ .compatible = "mediatek,mt2701-dsi", .data = &mt2701_dsi_driver_data },
 	{ .compatible = "mediatek,mt8173-dsi", .data = &mt8173_dsi_driver_data },
+	{ .compatible = "mediatek,mt6785-dsi", .data = &mt6785_dsi_driver_data },
 	{ .compatible = "mediatek,mt8183-dsi", .data = &mt8183_dsi_driver_data },
 	{ .compatible = "mediatek,mt8186-dsi", .data = &mt8186_dsi_driver_data },
 	{ .compatible = "mediatek,mt8188-dsi", .data = &mt8188_dsi_driver_data },
