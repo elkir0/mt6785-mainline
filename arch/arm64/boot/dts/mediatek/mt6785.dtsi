@@ -12,6 +12,8 @@
 #include <dt-bindings/pinctrl/mediatek,mt6785-pinfunc.h>
 #include <dt-bindings/power/mediatek,mt6785-power.h>
 #include <dt-bindings/reset/mediatek,mt6785-resets.h>
+#include <dt-bindings/thermal/mediatek,lvts-thermal.h>
+#include <dt-bindings/thermal/thermal.h>
 
 / {
 	#address-cells = <2>;
@@ -380,6 +382,7 @@
 			d-cache-sets = <128>;
 			next-level-cache = <&l2_0>;
 			mediatek,cci = <&cci>;
+			#cooling-cells = <2>;
 		};
 
 		cpu1: cpu@100 {
@@ -401,6 +404,7 @@
 			d-cache-sets = <128>;
 			next-level-cache = <&l2_0>;
 			mediatek,cci = <&cci>;
+			#cooling-cells = <2>;
 		};
 
 		cpu2: cpu@200 {
@@ -422,6 +426,7 @@
 			d-cache-sets = <128>;
 			next-level-cache = <&l2_0>;
 			mediatek,cci = <&cci>;
+			#cooling-cells = <2>;
 		};
 
 		cpu3: cpu@300 {
@@ -443,6 +448,7 @@
 			d-cache-sets = <128>;
 			next-level-cache = <&l2_0>;
 			mediatek,cci = <&cci>;
+			#cooling-cells = <2>;
 		};
 
 		cpu4: cpu@400 {
@@ -464,6 +470,7 @@
 			d-cache-sets = <128>;
 			next-level-cache = <&l2_0>;
 			mediatek,cci = <&cci>;
+			#cooling-cells = <2>;
 		};
 
 		cpu5: cpu@500 {
@@ -485,6 +492,7 @@
 			d-cache-sets = <128>;
 			next-level-cache = <&l2_0>;
 			mediatek,cci = <&cci>;
+			#cooling-cells = <2>;
 		};
 
 		cpu6: cpu@600 {
@@ -506,6 +514,7 @@
 			d-cache-sets = <256>;
 			next-level-cache = <&l2_1>;
 			mediatek,cci = <&cci>;
+			#cooling-cells = <2>;
 		};
 
 		cpu7: cpu@700 {
@@ -527,6 +536,7 @@
 			d-cache-sets = <256>;
 			next-level-cache = <&l2_1>;
 			mediatek,cci = <&cci>;
+			#cooling-cells = <2>;
 		};
 
 		l2_0: l2-cache0 {
@@ -1188,6 +1198,21 @@
 			status = "disabled";
 		};
 
+		lvts: thermal-sensor@1100b000 {
+			compatible = "mediatek,mt6785-lvts";
+			reg = <0 0x1100b000 0 0x1000>;
+			interrupts = <GIC_SPI 100 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&infracfg CLK_INFRA_THERM>;
+			resets = <&infracfg MT6785_INFRA_THERM_CTRL_RST>;
+			nvmem-cells = <&lvts_efuse_data1>,
+				      <&lvts_efuse_data2>,
+				      <&lvts_efuse_data3>;
+			nvmem-cell-names = "lvts-calib-data-1",
+					   "lvts-calib-data-2",
+					   "lvts-calib-data-3";
+			#thermal-sensor-cells = <1>;
+		};
+
 		pwm1: pwm@1100e000 {
 			compatible = "mediatek,mt6785-disp-pwm",
 				     "mediatek,mt8183-disp-pwm";
@@ -1438,6 +1463,25 @@
 			reset-names = "hci_rst", "unipro_rst", "crypto_rst";
 
 			status = "disabled";
+		};
+
+		efuse: efuse@11c10000 {
+			compatible = "mediatek,mt6785-efuse", "mediatek,efuse";
+			reg = <0 0x11c10000 0 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			lvts_efuse_data1: lvts1-calib@1b0 {
+				reg = <0x1b0 0x4>;
+			};
+
+			lvts_efuse_data2: lvts2-calib@1c8 {
+				reg = <0x1c8 0x8>;
+			};
+
+			lvts_efuse_data3: lvts3-calib@93c {
+				reg = <0x93c 0x18>;
+			};
 		};
 
 		u3phy: t-phy@11e40000 {
@@ -1998,6 +2042,234 @@
 				 <&mmsys CLK_MM_GALS_CAM2MM>;
 			clock-names = "apb", "smi", "gals";
 			power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
+		};
+	};
+
+	thermal_zones: thermal-zones {
+		cpu-big0-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts MT6785_BIG_CPU0>;
+
+			trips {
+				cpu_big0_alert: trip-alert {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_big0_crit: trip-crit {
+					temperature = <117000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_big0_alert>;
+					cooling-device = <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		cpu-big1-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts MT6785_BIG_CPU1>;
+
+			trips {
+				cpu_big1_alert: trip-alert {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_big1_crit: trip-crit {
+					temperature = <117000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_big1_alert>;
+					cooling-device = <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		cpu-little0-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts MT6785_LITTLE_CPU0>;
+
+			trips {
+				cpu_little0_alert: trip-alert {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_little0_crit: trip-crit {
+					temperature = <117000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_little0_alert>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu5 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		cpu-little1-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts MT6785_LITTLE_CPU1>;
+
+			trips {
+				cpu_little1_alert: trip-alert {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_little1_crit: trip-crit {
+					temperature = <117000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_little1_alert>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu5 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		cpu-little2-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts MT6785_LITTLE_CPU2>;
+
+			trips {
+				cpu_little2_alert: trip-alert {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_little2_crit: trip-crit {
+					temperature = <117000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_little2_alert>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu5 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		gpu0-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts MT6785_GPU0>;
+
+			trips {
+				gpu0_alert: trip-alert {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				gpu0_crit: trip-crit {
+					temperature = <117000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&gpu0_alert>;
+					cooling-device = <&gpu THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		gpu1-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts MT6785_GPU1>;
+
+			trips {
+				gpu1_alert: trip-alert {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				gpu1_crit: trip-crit {
+					temperature = <117000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&gpu1_alert>;
+					cooling-device = <&gpu THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		vpu-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts MT6785_VPU>;
+
+			trips {
+				vpu_alert: trip-alert {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				vpu_crit: trip-crit {
+					temperature = <117000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
 		};
 	};
 };
