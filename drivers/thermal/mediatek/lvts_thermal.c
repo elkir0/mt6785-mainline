@@ -1605,6 +1605,11 @@ static const u32 default_init_cmds[] = {
 	0xC10300FC, 0xC103009D, 0xC10300F1, 0xC10300E1
 };
 
+static const u32 mt6785_init_cmds[] = {
+	0xC1030420, 0xC1030500, 0xC1030300, 0xC10308C3, 0xC103098D,
+	0xC1030C7C, 0xC1030AA8, 0xC1030B04, 0xC1030E01, 0xC10306B8
+};
+
 static const u32 mt7987_init_cmds[] = {
 	0xC1030300, 0xC1030420, 0xC1030500, 0xC10307A6, 0xC10308C7,
 	0xC103098D, 0xC1030C7C, 0xC1030AA8, 0xC10308CE, 0xC10308C7,
@@ -2064,11 +2069,17 @@ static const struct lvts_platform_ops lvts_platform_ops_mt8196 = {
 
 static const struct lvts_data mt6785_lvts_data = {
 	.lvts_ctrl	= mt6785_lvts_data_ctrl,
+	.conn_cmd	= default_conn_cmds,
+	.init_cmd	= mt6785_init_cmds,
 	.num_lvts_ctrl	= ARRAY_SIZE(mt6785_lvts_data_ctrl),
+	.num_conn_cmd	= ARRAY_SIZE(default_conn_cmds),
+	.num_init_cmd	= ARRAY_SIZE(mt6785_init_cmds),
 	.temp_factor	= LVTS_COEFF_A_MT7988,
 	.temp_offset	= LVTS_COEFF_B_MT7988,
 	.gt_calib_bit_offset = 0,
 	.def_calibration = 19000,
+	.num_cal_offsets = LVTS_NUM_CAL_OFFSETS_MT7988,
+	.ops = &lvts_platform_ops_mt7988,
 };
 
 static const struct lvts_data mt7987_lvts_ap_data = {
