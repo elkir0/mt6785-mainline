@@ -303,7 +303,9 @@ SND_SOC_DAILINK_DEFS(primary_codec_ch34,
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
 /*
- * Speaker: SmartPA TFA9874 (i2c6@0x34) on I2S3. The link is always the last one in
+ * Speaker: SmartPA TFA9874 (i2c6@0x34) on I2S3, or the CS35L41 amplifiers listed in
+ * "mediatek,speaker-codecs" on the I2S output named by "mediatek,speaker-i2s"
+ * (default I2S3). The link is always the last one in
  * the array; if the tfa9874 driver is not loaded/not in DT, soc_probe cuts it off
  * (num_links--) and uses the widgets/routes/controls sets without the speaker,
  * so that the card (headphones/microphone) comes up without the amplifier too.
@@ -314,8 +316,8 @@ SND_SOC_DAILINK_DEFS(speaker,
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
 /* According to the container the amplifier expects I2S with 2 slots of 32 bits, 48 kHz. */
-static int mt6785_mt6359_i2s3_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
-					      struct snd_pcm_hw_params *params)
+static int mt6785_mt6359_spk_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
+					     struct snd_pcm_hw_params *params)
 {
 	struct snd_interval *rate = hw_param_interval(params,
 						      SNDRV_PCM_HW_PARAM_RATE);
@@ -485,7 +487,7 @@ static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 			   SND_SOC_DAIFMT_CBC_CFC,
 		.ignore_suspend = 1,
-		.be_hw_params_fixup = mt6785_mt6359_i2s3_hw_params_fixup,
+		.be_hw_params_fixup = mt6785_mt6359_spk_hw_params_fixup,
 		SND_SOC_DAILINK_REG(speaker),
 	},
 };
@@ -603,7 +605,7 @@ static int mt6785_mt6359_late_probe(struct snd_soc_card *card)
 	 * BE to any DL1 stream (the DAPM mixer path state at card
 	 * registration is stale: register reads bypass the cache), i.e. sound to the
 	 * headphones would turn on the loud speaker. The speaker is turned on only by the
-	 * PulseAudio path analog-output-speaker / spk-on (Speaker Switch + I2S3 route).
+	 * PulseAudio path analog-output-speaker / spk-on (Speaker Switch + speaker I2S route).
 	 */
 	if (mt6785_mt6359_have_speaker) {
 		snd_soc_dapm_disable_pin(card->dapm, "Speaker");
@@ -615,8 +617,9 @@ static int mt6785_mt6359_late_probe(struct snd_soc_card *card)
 static int mt6785_mt6359_probe_cs35l41(struct snd_soc_card *card,
 				       struct snd_soc_dai_link *spk_link)
 {
-	struct snd_soc_dai_link_component *codecs;
+	struct snd_soc_dai_link_component *codecs, *cpu;
 	struct snd_soc_dapm_route *routes;
+	const char *i2s;
 	size_t base_routes;
 	int count, i, j, ret;
 
@@ -654,6 +657,19 @@ static int mt6785_mt6359_probe_cs35l41(struct snd_soc_card *card,
 		codecs[i].dai_name = "cs35l41-pcm";
 	}
 
+	/* The amplifiers may hang off another I2S output than the default I2S3. */
+	if (!of_property_read_string(card->dev->of_node, "mediatek,speaker-i2s",
+				     &i2s)) {
+		cpu = devm_kzalloc(card->dev, sizeof(*cpu), GFP_KERNEL);
+		if (!cpu) {
+			ret = -ENOMEM;
+			goto err_put_amps;
+		}
+		cpu->dai_name = i2s;
+		spk_link->cpus = cpu;
+		spk_link->num_cpus = 1;
+	}
+
 	base_routes = ARRAY_SIZE(mt6785_mt6359_routes);
 	routes = devm_kcalloc(card->dev, base_routes + count, sizeof(*routes),
 			      GFP_KERNEL);
@@ -687,8 +703,8 @@ static int mt6785_mt6359_probe_cs35l41(struct snd_soc_card *card,
 	card->controls = mt6785_mt6359_controls_spk;
 	card->num_controls = ARRAY_SIZE(mt6785_mt6359_controls_spk);
 	mt6785_mt6359_have_speaker = true;
-	dev_info(card->dev, "speaker: %d cs35l41 amp(s) found, Speaker link enabled\n",
-		 count);
+	dev_info(card->dev, "speaker: %d cs35l41 amp(s) on %s, Speaker link enabled\n",
+		 count, spk_link->cpus->dai_name);
 
 	return 0;
 
