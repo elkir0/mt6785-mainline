@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/pm_runtime.h>
+#include <sound/cs35l41.h>
 #include <sound/jack.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
@@ -329,6 +330,64 @@ static int mt6785_mt6359_i2s3_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	return 0;
 }
 
+static int mt6785_mt6359_cs35l41_init(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_soc_dai *codec_dai;
+	unsigned int rx_slot;
+	int i, ret;
+
+	for_each_rtd_codec_dais(rtd, i, codec_dai) {
+		/* Quad stereo (YT-J706F): amps 0..1 on left slot, 2..3 on right */
+		if (rtd->dai_link->num_codecs == 4)
+			rx_slot = i < 2 ? 0 : 1;
+		else
+			rx_slot = i & 1;
+
+		ret = snd_soc_dai_set_channel_map(codec_dai, 0, NULL,
+						  1, &rx_slot);
+		if (ret < 0) {
+			dev_err(codec_dai->dev, "set channel map fail: %d\n",
+				ret);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+static int mt6785_mt6359_cs35l41_hw_params(struct snd_pcm_substream *substream,
+					   struct snd_pcm_hw_params *params)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	unsigned int freq = params_rate(params) * 64;
+	struct snd_soc_dai *codec_dai;
+	int i, ret;
+
+	for_each_rtd_codec_dais(rtd, i, codec_dai) {
+		ret = snd_soc_component_set_sysclk(codec_dai->component,
+						   CS35L41_CLKID_SCLK, 0,
+						   freq, SND_SOC_CLOCK_IN);
+		if (ret < 0) {
+			dev_err(codec_dai->dev,
+				"set component sysclk fail: %d\n", ret);
+			return ret;
+		}
+
+		ret = snd_soc_dai_set_sysclk(codec_dai, CS35L41_CLKID_SCLK,
+					     freq, SND_SOC_CLOCK_IN);
+		if (ret < 0) {
+			dev_err(codec_dai->dev, "set sysclk fail: %d\n", ret);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+static const struct snd_soc_ops mt6785_mt6359_cs35l41_ops = {
+	.hw_params = mt6785_mt6359_cs35l41_hw_params,
+};
+
 static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
 	{
 		.name = "Playback_1",
@@ -553,10 +612,98 @@ static int mt6785_mt6359_late_probe(struct snd_soc_card *card)
 	return 0;
 }
 
+static int mt6785_mt6359_probe_cs35l41(struct snd_soc_card *card,
+				       struct snd_soc_dai_link *spk_link)
+{
+	struct snd_soc_dai_link_component *codecs;
+	struct snd_soc_dapm_route *routes;
+	size_t base_routes;
+	int count, i, j, ret;
+
+	count = of_count_phandle_with_args(card->dev->of_node,
+					   "mediatek,speaker-codecs", NULL);
+	if (count <= 0)
+		return count < 0 ? count : -EINVAL;
+
+	codecs = devm_kcalloc(card->dev, count, sizeof(*codecs), GFP_KERNEL);
+	if (!codecs)
+		return -ENOMEM;
+
+	for (i = 0; i < count; i++) {
+		struct device_node *amp_np;
+		struct i2c_client *i2c;
+
+		amp_np = of_parse_phandle(card->dev->of_node,
+					  "mediatek,speaker-codecs", i);
+		if (!amp_np) {
+			ret = -EINVAL;
+			goto err_put_amps;
+		}
+
+		i2c = of_find_i2c_device_by_node(amp_np);
+		if (!i2c || !i2c->dev.driver) {
+			if (i2c)
+				put_device(&i2c->dev);
+			of_node_put(amp_np);
+			ret = -EPROBE_DEFER;
+			goto err_put_amps;
+		}
+		put_device(&i2c->dev);
+
+		codecs[i].of_node = amp_np;
+		codecs[i].dai_name = "cs35l41-pcm";
+	}
+
+	base_routes = ARRAY_SIZE(mt6785_mt6359_routes);
+	routes = devm_kcalloc(card->dev, base_routes + count, sizeof(*routes),
+			      GFP_KERNEL);
+	if (!routes) {
+		ret = -ENOMEM;
+		goto err_put_amps;
+	}
+
+	memcpy(routes, mt6785_mt6359_routes, sizeof(mt6785_mt6359_routes));
+	for (j = 0; j < count; j++) {
+		char *spk_out = devm_kasprintf(card->dev, GFP_KERNEL,
+					       "SPK%d SPK", j + 1);
+
+		if (!spk_out) {
+			ret = -ENOMEM;
+			goto err_put_amps;
+		}
+		routes[base_routes + j].sink = "Speaker";
+		routes[base_routes + j].source = spk_out;
+	}
+
+	spk_link->codecs = codecs;
+	spk_link->num_codecs = count;
+	spk_link->init = mt6785_mt6359_cs35l41_init;
+	spk_link->ops = &mt6785_mt6359_cs35l41_ops;
+
+	card->dapm_widgets = mt6785_mt6359_widgets_spk;
+	card->num_dapm_widgets = ARRAY_SIZE(mt6785_mt6359_widgets_spk);
+	card->dapm_routes = routes;
+	card->num_dapm_routes = base_routes + count;
+	card->controls = mt6785_mt6359_controls_spk;
+	card->num_controls = ARRAY_SIZE(mt6785_mt6359_controls_spk);
+	mt6785_mt6359_have_speaker = true;
+	dev_info(card->dev, "speaker: %d cs35l41 amp(s) found, Speaker link enabled\n",
+		 count);
+
+	return 0;
+
+err_put_amps:
+	while (i--)
+		of_node_put(codecs[i].of_node);
+	return ret;
+}
+
 static int mt6785_mt6359_soc_card_probe(struct mtk_soc_card_data *soc_card_data,
 					bool legacy)
 {
 	struct snd_soc_card *card = soc_card_data->card_data->card;
+	struct snd_soc_dai_link *spk_link =
+		&mt6785_mt6359_dai_links[card->num_links - 1];
 	struct device_node *np;
 	struct i2c_client *spk = NULL;
 	int ret;
@@ -568,14 +715,16 @@ static int mt6785_mt6359_soc_card_probe(struct mtk_soc_card_data *soc_card_data,
 		return dev_err_probe(card->dev, ret, "%s init gpio error\n",
 				     __func__);
 
+	if (of_property_present(card->dev->of_node, "mediatek,speaker-codecs"))
+		return mt6785_mt6359_probe_cs35l41(card, spk_link);
+
 	/* there is a speaker only if tfa9874 is in DT and its driver is already bound */
 	np = of_find_compatible_node(NULL, NULL, "nxp,tfa9874");
 	if (np)
 		spk = of_find_i2c_device_by_node(np);
 	if (spk && spk->dev.driver) {
 		/* the i2c bus number floats (no aliases) - bind by DT node */
-		struct snd_soc_dai_link_component *c =
-			mt6785_mt6359_dai_links[card->num_links - 1].codecs;
+		struct snd_soc_dai_link_component *c = spk_link->codecs;
 
 		c->name = NULL;
 		c->of_node = np;	/* keep the reference for the whole lifetime of the card */
@@ -662,7 +811,7 @@ static struct platform_driver mt6785_mt6359_driver = {
 };
 module_platform_driver(mt6785_mt6359_driver);
 
-MODULE_DESCRIPTION("MT6785-MT6359 ALSA SoC machine driver (begonia)");
+MODULE_DESCRIPTION("MT6785-MT6359 ALSA SoC machine driver (begonia, YT-J706F)");
 MODULE_AUTHOR("Jiaxin Yu <jiaxin.yu@mediatek.com>");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("mt6785_mt6359 soc card");
