@@ -380,8 +380,8 @@ static struct firmware *build_test_fw(struct kunit *test, int num_parts,
 		part[2] = sram_addrs[i] >> 16;
 		part[3] = sram_addrs[i] >> 24;
 		/* Size and file offset big endian. */
-		put_unaligned_be32(sizes[i], part + HX83102_ZF_PART_SIZE_OFF);
-		put_unaligned_be32(fw_off, part + HX83102_ZF_PART_FWADDR_OFF);
+		put_unaligned_le32(sizes[i], part + HX83102_ZF_PART_SIZE_OFF);
+		put_unaligned_le32(fw_off, part + HX83102_ZF_PART_FWADDR_OFF);
 		/* Marker pair zero: regular partition. */
 
 		for (j = 0; j < sizes[i]; j++)

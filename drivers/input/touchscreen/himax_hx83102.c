@@ -732,9 +732,9 @@ VISIBLE_IF_KUNIT int hx83102_parse_fw(const struct firmware *fw,
 
 	/* Partition 0: the firmware code. */
 	layout->code_sram_addr = get_unaligned_le32(table);
-	layout->code_size = get_unaligned_be32(table +
+	layout->code_size = get_unaligned_le32(table +
 					       HX83102_ZF_PART_SIZE_OFF);
-	layout->code_fw_off = get_unaligned_be32(table +
+	layout->code_fw_off = get_unaligned_le32(table +
 						 HX83102_ZF_PART_FWADDR_OFF);
 
 	if (!layout->code_size ||
@@ -745,9 +745,9 @@ VISIBLE_IF_KUNIT int hx83102_parse_fw(const struct firmware *fw,
 	for (i = 1; i < num_parts; i++) {
 		const u8 *part = table + i * 16;
 		u32 sram_addr = get_unaligned_le32(part);
-		u32 size = get_unaligned_be32(part +
+		u32 size = get_unaligned_le32(part +
 					      HX83102_ZF_PART_SIZE_OFF);
-		u32 fw_off = get_unaligned_be32(part +
+		u32 fw_off = get_unaligned_le32(part +
 						HX83102_ZF_PART_FWADDR_OFF);
 
 		if (hx83102_part_is_overlay(part)) {
@@ -794,9 +794,9 @@ VISIBLE_IF_KUNIT int hx83102_parse_fw(const struct firmware *fw,
 		for (i = 1; i < num_parts; i++) {
 			const u8 *part = table + i * 16;
 			u32 sram_addr = get_unaligned_le32(part);
-			u32 size = get_unaligned_be32(part +
+			u32 size = get_unaligned_le32(part +
 						      HX83102_ZF_PART_SIZE_OFF);
-			u32 fw_off = get_unaligned_be32(part +
+			u32 fw_off = get_unaligned_le32(part +
 							HX83102_ZF_PART_FWADDR_OFF);
 
 			if (hx83102_part_is_overlay(part) || !size)
@@ -1146,7 +1146,7 @@ static void hx83102_recover(struct work_struct *work)
 
 static int hx83102_chip_verify(struct hx83102_data *ts)
 {
-	u8 id[3];
+	u8 id[4];
 	int try;
 	int ret;
 
@@ -1165,15 +1165,16 @@ static int hx83102_chip_verify(struct hx83102_data *ts)
 		if (ret)
 			return ret;
 
-		if (id[0] == HX83102_CHIP_ID_0 &&
-		    id[1] == HX83102_CHIP_ID_1 &&
-		    id[2] == HX83102_CHIP_ID_83102E)
+		/* Vendor hx83102_chip_detect(): ID in bytes 3, 2, 1. */
+		if (id[3] == HX83102_CHIP_ID_0 &&
+		    id[2] == HX83102_CHIP_ID_1 &&
+		    id[1] == HX83102_CHIP_ID_83102E)
 			return 0;
 	}
 
 	return dev_err_probe(ts->dev, -ENODEV,
 			     "unexpected chip ID %02x %02x %02x\n",
-			     id[0], id[1], id[2]);
+			     id[3], id[2], id[1]);
 }
 
 static int hx83102_fw_cache(struct hx83102_data *ts)
@@ -1237,6 +1238,7 @@ static int hx83102_start(struct hx83102_data *ts)
 
 	enable_irq(ts->irq);
 	ts->started = true;
+	dev_dbg(ts->dev, "firmware %s running\n", ts->fw_name);
 
 	return 0;
 }
@@ -1271,11 +1273,15 @@ static void hx83102_panel_prepare_work(struct work_struct *work)
 	int ret;
 
 	ret = hx83102_start(ts);
-	if (!ret) {
-		WRITE_ONCE(ts->prepare_work_finished, true);
-		/* Pairs with the read barrier in the suspend path. */
-		smp_wmb();
+	if (ret) {
+		dev_err(ts->dev, "failed to start the touch controller: %d\n",
+			ret);
+		return;
 	}
+
+	WRITE_ONCE(ts->prepare_work_finished, true);
+	/* Pairs with the read barrier in the suspend path. */
+	smp_wmb();
 }
 
 static int hx83102_input_stop(struct hx83102_data *ts)
