@@ -182,9 +182,13 @@
 	status = "okay";
 };
 
-/* TI bq27541 fuel gauge (stock: i2c3 0x55) */
+/*
+ * TI bq27541 fuel gauge (stock: i2c3 0x55). The stock bus runs at the
+ * vendor driver's default 100 kHz; at 400 kHz the gauge's second data byte
+ * often reads back as 0xff.
+ */
 &i2c3 {
-	clock-frequency = <400000>;
+	clock-frequency = <100000>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c3_pins>;
 	status = "okay";
