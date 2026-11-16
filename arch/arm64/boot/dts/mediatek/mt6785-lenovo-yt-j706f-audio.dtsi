@@ -136,6 +136,8 @@
 		cirrus,asp-sdout-hiz = <3>;
 		cirrus,gpio2-src-select = <4>;
 		cirrus,gpio2-output-enable;
+		/* DSP firmware: cirrus/cs35l41-dsp1-spk-prot-yt-j706f[-spkN].{wmfw,bin} */
+		cirrus,subsystem-id = "yt-j706f";
 		#sound-dai-cells = <1>;
 		sound-name-prefix = "SPK1";
 	};
@@ -150,6 +152,7 @@
 		cirrus,asp-sdout-hiz = <3>;
 		cirrus,gpio2-src-select = <4>;
 		cirrus,gpio2-output-enable;
+		cirrus,subsystem-id = "yt-j706f";
 		#sound-dai-cells = <1>;
 		sound-name-prefix = "SPK2";
 	};
@@ -164,6 +167,7 @@
 		cirrus,asp-sdout-hiz = <3>;
 		cirrus,gpio2-src-select = <4>;
 		cirrus,gpio2-output-enable;
+		cirrus,subsystem-id = "yt-j706f";
 		#sound-dai-cells = <1>;
 		sound-name-prefix = "SPK3";
 	};
@@ -178,6 +182,7 @@
 		cirrus,asp-sdout-hiz = <3>;
 		cirrus,gpio2-src-select = <4>;
 		cirrus,gpio2-output-enable;
+		cirrus,subsystem-id = "yt-j706f";
 		#sound-dai-cells = <1>;
 		sound-name-prefix = "SPK4";
 	};
