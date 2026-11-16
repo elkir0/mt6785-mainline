@@ -332,6 +332,20 @@ static int mt6785_mt6359_spk_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	return 0;
 }
 
+/*
+ * The CS35L41 takes 16 or 24-bit words. S24_LE keeps the 32-bit slots on
+ * the wire (bit clock 64 * fs) with a 24-bit word length.
+ */
+static int mt6785_mt6359_cs35l41_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
+						 struct snd_pcm_hw_params *params)
+{
+	mt6785_mt6359_spk_hw_params_fixup(rtd, params);
+	snd_mask_none(hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT));
+	snd_mask_set_format(hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT),
+			    SNDRV_PCM_FORMAT_S24_LE);
+	return 0;
+}
+
 static int mt6785_mt6359_cs35l41_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_dai *codec_dai;
@@ -695,6 +709,7 @@ static int mt6785_mt6359_probe_cs35l41(struct snd_soc_card *card,
 	spk_link->num_codecs = count;
 	spk_link->init = mt6785_mt6359_cs35l41_init;
 	spk_link->ops = &mt6785_mt6359_cs35l41_ops;
+	spk_link->be_hw_params_fixup = mt6785_mt6359_cs35l41_hw_params_fixup;
 
 	card->dapm_widgets = mt6785_mt6359_widgets_spk;
 	card->num_dapm_widgets = ARRAY_SIZE(mt6785_mt6359_widgets_spk);
