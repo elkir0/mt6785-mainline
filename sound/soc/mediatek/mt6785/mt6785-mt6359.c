@@ -346,21 +346,37 @@ static int mt6785_mt6359_cs35l41_hw_params_fixup(struct snd_soc_pcm_runtime *rtd
 	return 0;
 }
 
+/*
+ * Quad speakers (YT-J706F): SPK1 (tweeter) and SPK4 (woofer) sit on the
+ * right side, SPK2 (woofer) and SPK3 (tweeter) on the left. An amplifier
+ * plays ASPRX1, directly or through the protection DSP (its default channel
+ * balance takes the first input), so RX1 carries the amplifier's own channel
+ * and RX2 the other one, as the DSP has both inputs. The two slots must
+ * differ: with both RX channels on one slot, the DSP hears nothing.
+ */
+static const unsigned int mt6785_cs35l41_quad_rx_slots[4][2] = {
+	{ 1, 0 }, { 0, 1 }, { 0, 1 }, { 1, 0 },
+};
+
 static int mt6785_mt6359_cs35l41_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_dai *codec_dai;
-	unsigned int rx_slot;
+	const unsigned int *rx_slot;
+	unsigned int rx_num, stereo_slot;
 	int i, ret;
 
 	for_each_rtd_codec_dais(rtd, i, codec_dai) {
-		/* Quad stereo (YT-J706F): amps 0..1 on left slot, 2..3 on right */
-		if (rtd->dai_link->num_codecs == 4)
-			rx_slot = i < 2 ? 0 : 1;
-		else
-			rx_slot = i & 1;
+		if (rtd->dai_link->num_codecs == 4) {
+			rx_slot = mt6785_cs35l41_quad_rx_slots[i];
+			rx_num = 2;
+		} else {
+			stereo_slot = i & 1;
+			rx_slot = &stereo_slot;
+			rx_num = 1;
+		}
 
 		ret = snd_soc_dai_set_channel_map(codec_dai, 0, NULL,
-						  1, &rx_slot);
+						  rx_num, rx_slot);
 		if (ret < 0) {
 			dev_err(codec_dai->dev, "set channel map fail: %d\n",
 				ret);
