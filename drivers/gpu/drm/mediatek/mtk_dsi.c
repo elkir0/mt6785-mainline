@@ -243,11 +243,6 @@ static void mtk_dsi_mask(struct mtk_dsi *dsi, u32 offset, u32 mask, u32 data)
 	writel((temp & ~mask) | (data & mask), dsi->regs + offset);
 }
 
-/* Bring-up experiment: fixed PHY timings (TIMECON0..3), e.g. the bootloader's. */
-static uint timecon_override[4];
-static int timecon_override_n;
-module_param_array(timecon_override, uint, &timecon_override_n, 0444);
-
 static void mtk_dsi_phy_timconfig(struct mtk_dsi *dsi)
 {
 	u32 timcon0, timcon1, timcon2, timcon3;
@@ -293,13 +288,6 @@ static void mtk_dsi_phy_timconfig(struct mtk_dsi *dsi)
 	writel(timcon1, dsi->regs + DSI_PHY_TIMECON1);
 	writel(timcon2, dsi->regs + DSI_PHY_TIMECON2);
 	writel(timcon3, dsi->regs + DSI_PHY_TIMECON3);
-
-	if (timecon_override_n == 4) {
-		writel(timecon_override[0], dsi->regs + DSI_PHY_TIMECON0);
-		writel(timecon_override[1], dsi->regs + DSI_PHY_TIMECON1);
-		writel(timecon_override[2], dsi->regs + DSI_PHY_TIMECON2);
-		writel(timecon_override[3], dsi->regs + DSI_PHY_TIMECON3);
-	}
 }
 
 static void mtk_dsi_enable(struct mtk_dsi *dsi)
