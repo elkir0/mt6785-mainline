@@ -276,39 +276,43 @@
 		};
 	};
 
-	/* I2S0 feedback input from CS35L41 amps (stock DT / hardware) */
-	aud_gpio_i2s0_off: aud-gpio-i2s0-off-pins {
-		pins-i2s0 {
-			pinmux = <PINMUX_GPIO70__FUNC_GPIO70>;
+	/*
+	 * The CS35L41 amps sit on I2S1 (output) and I2S2 (feedback input), as in
+	 * the stock DT (mtk_spk_i2s_out = 1, mtk_spk_i2s_in = 2). The SMARTPA
+	 * names the MediaTek reference design gives GPIO67-71 (I2S3/I2S0) do
+	 * not apply to this board.
+	 */
+	aud_gpio_i2s1_off: aud-gpio-i2s1-off-pins {
+		pins-i2s1 {
+			pinmux = <PINMUX_GPIO31__FUNC_GPIO31>,
+				 <PINMUX_GPIO32__FUNC_GPIO32>,
+				 <PINMUX_GPIO34__FUNC_GPIO34>;
 			input-enable;
 			bias-pull-down;
 		};
 	};
 
-	aud_gpio_i2s0_on: aud-gpio-i2s0-on-pins {
-		pins-i2s0 {
-			pinmux = <PINMUX_GPIO70__FUNC_I2S0_DI>;
-			input-enable;
+	aud_gpio_i2s1_on: aud-gpio-i2s1-on-pins {
+		pins-i2s1 {
+			pinmux = <PINMUX_GPIO31__FUNC_I2S1_BCK>,
+				 <PINMUX_GPIO32__FUNC_I2S1_LRCK>,
+				 <PINMUX_GPIO34__FUNC_I2S1_DO>;
 			bias-disable;
 		};
 	};
 
-	/* I2S3 output to CS35L41 amps (stock DT / hardware) */
-	aud_gpio_i2s3_off: aud-gpio-i2s3-off-pins {
-		pins-i2s3 {
-			pinmux = <PINMUX_GPIO67__FUNC_GPIO67>,
-				 <PINMUX_GPIO68__FUNC_GPIO68>,
-				 <PINMUX_GPIO71__FUNC_GPIO71>;
+	aud_gpio_i2s2_off: aud-gpio-i2s2-off-pins {
+		pins-i2s2 {
+			pinmux = <PINMUX_GPIO33__FUNC_GPIO33>;
 			input-enable;
 			bias-pull-down;
 		};
 	};
 
-	aud_gpio_i2s3_on: aud-gpio-i2s3-on-pins {
-		pins-i2s3 {
-			pinmux = <PINMUX_GPIO67__FUNC_I2S3_LRCK>,
-				 <PINMUX_GPIO68__FUNC_I2S3_DO>,
-				 <PINMUX_GPIO71__FUNC_I2S3_BCK>;
+	aud_gpio_i2s2_on: aud-gpio-i2s2-on-pins {
+		pins-i2s2 {
+			pinmux = <PINMUX_GPIO33__FUNC_I2S2_DI>;
+			input-enable;
 			bias-disable;
 		};
 	};
@@ -355,14 +359,15 @@
 		mediatek,platform = <&afe>;
 		mediatek,accdet = <&accdet>;
 		mediatek,speaker-codecs = <&spk1>, <&spk2>, <&spk3>, <&spk4>;
+		mediatek,speaker-i2s = "I2S1";
 
 		pinctrl-names = "aud_clk_mosi_off", "aud_clk_mosi_on",
 				"aud_dat_mosi_off", "aud_dat_mosi_on",
 				"aud_dat_miso_off", "aud_dat_miso_on",
 				"aud_dat_mosi_ch34_off", "aud_dat_mosi_ch34_on",
 				"aud_dat_miso_ch34_off", "aud_dat_miso_ch34_on",
-				"aud_gpio_i2s0_off", "aud_gpio_i2s0_on",
-				"aud_gpio_i2s3_off", "aud_gpio_i2s3_on";
+				"aud_gpio_i2s1_off", "aud_gpio_i2s1_on",
+				"aud_gpio_i2s2_off", "aud_gpio_i2s2_on";
 		pinctrl-0 = <&aud_clk_mosi_off>;
 		pinctrl-1 = <&aud_clk_mosi_on>;
 		pinctrl-2 = <&aud_dat_mosi_off>;
@@ -373,9 +378,9 @@
 		pinctrl-7 = <&aud_dat_mosi_ch34_on>;
 		pinctrl-8 = <&aud_dat_miso_ch34_off>;
 		pinctrl-9 = <&aud_dat_miso_ch34_on>;
-		pinctrl-10 = <&aud_gpio_i2s0_off>;
-		pinctrl-11 = <&aud_gpio_i2s0_on>;
-		pinctrl-12 = <&aud_gpio_i2s3_off>;
-		pinctrl-13 = <&aud_gpio_i2s3_on>;
+		pinctrl-10 = <&aud_gpio_i2s1_off>;
+		pinctrl-11 = <&aud_gpio_i2s1_on>;
+		pinctrl-12 = <&aud_gpio_i2s2_off>;
+		pinctrl-13 = <&aud_gpio_i2s2_on>;
 	};
 };
