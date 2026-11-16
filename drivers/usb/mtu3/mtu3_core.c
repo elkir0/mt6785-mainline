@@ -670,6 +670,7 @@ static irqreturn_t mtu3_link_isr(struct mtu3 *mtu)
 {
 	void __iomem *mbase = mtu->mac_base;
 	enum usb_device_speed udev_speed;
+	bool was_connected;
 	u32 maxpkt = 64;
 	u32 link;
 	u32 speed;
@@ -720,13 +721,17 @@ static irqreturn_t mtu3_link_isr(struct mtu3 *mtu)
 	mtu->g.speed = udev_speed;
 	mtu->g.ep0->maxpacket = maxpkt;
 	mtu->ep0_state = MU3D_EP0_STATE_SETUP;
+	was_connected = mtu->connected;
 	mtu->connected = !!(udev_speed != USB_SPEED_UNKNOWN);
 
+	/* one runtime PM reference per connection, see mtu3_gadget_detach() */
 	if (udev_speed == USB_SPEED_UNKNOWN) {
 		mtu3_gadget_disconnect(mtu);
-		pm_runtime_put(mtu->dev);
+		if (was_connected)
+			pm_runtime_put(mtu->dev);
 	} else {
-		pm_runtime_get(mtu->dev);
+		if (!was_connected)
+			pm_runtime_get(mtu->dev);
 		mtu3_ep0_setup(mtu);
 	}
 

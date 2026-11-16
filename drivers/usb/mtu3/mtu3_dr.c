@@ -133,6 +133,7 @@ static void ssusb_mode_sw_work(struct work_struct *work)
 	struct mtu3 *mtu = ssusb->u3d;
 	enum usb_role desired_role = otg_sx->desired_role;
 	enum usb_role current_role;
+	bool detached = false;
 
 	current_role = ssusb->is_host ? USB_ROLE_HOST : USB_ROLE_DEVICE;
 
@@ -141,10 +142,29 @@ static void ssusb_mode_sw_work(struct work_struct *work)
 		desired_role = USB_ROLE_HOST;
 		if (otg_sx->default_role == USB_ROLE_DEVICE)
 			desired_role = USB_ROLE_DEVICE;
+		detached = true;
 	}
 
-	if (current_role == desired_role)
+	if (current_role == desired_role) {
+		/*
+		 * A device-default port goes to "none" when the cable is pulled:
+		 * stop the device (pull-up off, the gadget sees the disconnect)
+		 * and start it again on the next attach, so the host enumerates
+		 * it afresh.
+		 */
+		if (ssusb->is_host || detached == !mtu->is_active)
+			return;
+
+		pm_runtime_get_sync(ssusb->dev);
+		if (detached) {
+			mtu3_gadget_detach(mtu);
+			mtu3_stop(mtu);
+		} else {
+			mtu3_start(mtu);
+		}
+		pm_runtime_put(ssusb->dev);
 		return;
+	}
 
 	dev_dbg(ssusb->dev, "set role : %s\n", usb_role_string(desired_role));
 	mtu3_dbg_trace(ssusb->dev, "set role : %s", usb_role_string(desired_role));

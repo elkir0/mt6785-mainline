@@ -760,6 +760,25 @@ void mtu3_gadget_disconnect(struct mtu3 *mtu)
 	usb_gadget_set_state(&mtu->g, USB_STATE_NOTATTACHED);
 }
 
+/*
+ * The cable is gone but the PHY did not report it, e.g. a USB-C port whose
+ * role switch reports no role while the controller stays a device: drop
+ * the link as a disconnect interrupt would.
+ */
+void mtu3_gadget_detach(struct mtu3 *mtu)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&mtu->lock, flags);
+	if (mtu->connected) {
+		mtu->connected = false;
+		mtu->g.speed = USB_SPEED_UNKNOWN;
+		mtu3_gadget_disconnect(mtu);
+		pm_runtime_put(mtu->dev);
+	}
+	spin_unlock_irqrestore(&mtu->lock, flags);
+}
+
 void mtu3_gadget_reset(struct mtu3 *mtu)
 {
 	dev_dbg(mtu->dev, "gadget RESET\n");
