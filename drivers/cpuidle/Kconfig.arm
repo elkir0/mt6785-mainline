@@ -130,3 +130,15 @@ config ARM_QCOM_SPM_CPUIDLE
 	  The Subsystem Power Manager (SPM) controls low power modes for the
 	  CPU and L2 cores. It interface with various system drivers to put
 	  the cores in low power modes.
+
+config ARM64_WFI_S2IDLE_CPUIDLE
+	bool "WFI cpuidle driver with an s2idle state"
+	depends on ARM64 && OF
+	help
+	  Select this to enable a WFI-only cpuidle driver for SoCs whose
+	  firmware idle states cannot be used. Providing an idle state with
+	  an enter_s2idle callback lets suspend-to-idle freeze the tick and
+	  timekeeping while CPUs still only execute WFI.
+
+	  It only binds on MediaTek MT6785 and only when no other cpuidle
+	  driver is already registered.
