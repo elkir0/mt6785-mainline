@@ -384,6 +384,19 @@
 	};
 };
 
+/* Volume down is the keypad's only key: row 0, column 0 (stock kpd map entry 0) */
+&keyboard {
+	pinctrl-names = "default";
+	pinctrl-0 = <&keypad_pins>;
+	linux,keymap = <MATRIX_KEY(0, 0, KEY_VOLUMEDOWN)>;
+	keypad,num-rows = <1>;
+	keypad,num-columns = <1>;
+	debounce-delay-ms = <32>;
+	mediatek,keys-per-group = <1>;
+	wakeup-source;
+	status = "okay";
+};
+
 &mfg {
 	domain-supply = <&mt6359_vpu_buck_reg>;
 };
@@ -489,6 +502,13 @@
 };
 
 &pio {
+	keypad_pins: keypad-pins {
+		pins-keypad {
+			pinmux = <PINMUX_GPIO58__FUNC_KPROW0>,
+				 <PINMUX_GPIO59__FUNC_KPCOL0>;
+		};
+	};
+
 	backlight_pins: backlight-pins {
 		pins-bias-en {
 			pinmux = <PINMUX_GPIO23__FUNC_GPIO23>,
