@@ -118,7 +118,7 @@
 &dsi0 {
 	status = "okay";
 
-	panel@0 {
+	panel: panel@0 {
 		compatible = "lenovo,j706f-boe-hx83102p";
 		reg = <0>;
 		/* the driver's "enable" line is the panel reset (stock: GPIO44) */
@@ -475,6 +475,28 @@
 		};
 	};
 
+	touch_pins: touch-pins {
+		pins-irq {
+			pinmux = <PINMUX_GPIO1__FUNC_GPIO1>;
+			input-enable;
+			bias-pull-up;
+		};
+
+		pins-reset {
+			pinmux = <PINMUX_GPIO2__FUNC_GPIO2>;
+			output-high;
+		};
+	};
+
+	spi0_pins: spi0-pins {
+		pins-bus {
+			pinmux = <PINMUX_GPIO17__FUNC_SPI0_A_MI>,
+				 <PINMUX_GPIO18__FUNC_SPI0_A_MO>,
+				 <PINMUX_GPIO19__FUNC_SPI0_A_CSB>,
+				 <PINMUX_GPIO20__FUNC_SPI0_A_CLK>;
+		};
+	};
+
 	i2c3_pins: i2c3-pins {
 		pins-bus {
 			pinmux = <PINMUX_GPIO55__FUNC_SCL3>,
@@ -588,6 +610,27 @@
  */
 &spm {
 	/delete-node/ power-domain@4;
+};
+
+/* Himax HX83102P touch and pen, the touch side of the panel's TDDI chip */
+&spi0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi0_pins>;
+	mediatek,pad-select = <0>;
+	status = "okay";
+
+	touchscreen@0 {
+		compatible = "himax,hx83102p-ts";
+		reg = <0>;
+		spi-max-frequency = <9600000>;
+		interrupts-extended = <&pio 1 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&pio 2 GPIO_ACTIVE_LOW>;
+		panel = <&panel>;
+		touchscreen-size-x = <1200>;
+		touchscreen-size-y = <2000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&touch_pins>;
+	};
 };
 
 &ssusb {
