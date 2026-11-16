@@ -1466,8 +1466,11 @@ int cs35l41_set_cspl_mbox_cmd(struct device *dev, struct regmap *regmap,
 		return ret;
 	}
 
-	// Read mailbox status and verify it is appropriate for the given cmd
-	for (i = 0; i < 5; i++) {
+	/*
+	 * Read mailbox status and verify it is appropriate for the given cmd.
+	 * A pause can take six polls to be acknowledged, so allow about 10 ms.
+	 */
+	for (i = 0; i < 10; i++) {
 		usleep_range(1000, 1100);
 
 		ret = regmap_read(regmap, CS35L41_DSP_MBOX_2, &sts);
