@@ -9,6 +9,9 @@
  * Author: Shi Zhigang <Zhigang.Shi@liteon.com>
  *
  * IIO driver for LTRF216A (7-bit I2C slave address 0x53).
+ *
+ * The LTR-308 and the LTR-578 (ambient light plus proximity; only its light
+ * sensor is supported) share its ambient light register map.
  */
 
 #include <linux/bitfield.h>
@@ -550,8 +553,15 @@ static const struct ltr_chip_info ltrf216a_chip_info = {
 	.lux_multiplier		= 45,
 };
 
+/* Lite-On: lux = 0.8 * ALS_DATA / (gain * integration time in 100 ms) */
+static const struct ltr_chip_info ltr578_chip_info = {
+	.has_clear_data		= true,
+	.lux_multiplier		= 80,
+};
+
 static const struct i2c_device_id ltrf216a_id[] = {
 	{ "ltr308", .driver_data = (kernel_ulong_t)&ltr308_chip_info },
+	{ "ltr578", .driver_data = (kernel_ulong_t)&ltr578_chip_info },
 	{ "ltrf216a", .driver_data = (kernel_ulong_t)&ltrf216a_chip_info },
 	{ }
 };
@@ -559,6 +569,7 @@ MODULE_DEVICE_TABLE(i2c, ltrf216a_id);
 
 static const struct of_device_id ltrf216a_of_match[] = {
 	{ .compatible = "liteon,ltr308", .data = &ltr308_chip_info },
+	{ .compatible = "liteon,ltr578", .data = &ltr578_chip_info },
 	{ .compatible = "liteon,ltrf216a", .data = &ltrf216a_chip_info },
 	/* For Valve's Steamdeck device, an ACPI platform using PRP0001 */
 	{ .compatible = "ltr,ltrf216a", .data = &ltrf216a_chip_info },
