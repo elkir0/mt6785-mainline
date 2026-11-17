@@ -100,6 +100,14 @@ properties:
     description:
       SCL frequency to use (in Hz). If omitted, 100kHz is used.
 
+  mediatek,ch-offset:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    default: 0
+    description:
+      Register offset of the AP I2C channel window on multi-channel MediaTek
+      I2C controllers (e.g. 0x100 on MT6785 camera buses). When omitted or 0,
+      channel 0 at the controller base is used.
+
   mediatek,have-pmic:
     description: Platform controls I2C from PMIC side
     type: boolean

@@ -228,6 +228,7 @@
 /* Camera I2C bus 2 (stock: i2c2 @ 0x11009000, 400 kHz) */
 &i2c2 {
 	clock-frequency = <400000>;
+	mediatek,ch-offset = <0x100>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c2_pins>;
 	status = "okay";
@@ -253,6 +254,7 @@
 /* Camera I2C bus 4 (stock: i2c4 @ 0x11011000, 400 kHz) */
 &i2c4 {
 	clock-frequency = <400000>;
+	mediatek,ch-offset = <0x100>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c4_pins>;
 	status = "okay";
