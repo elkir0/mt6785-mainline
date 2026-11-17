@@ -1232,6 +1232,9 @@ static int seninf_probe(struct platform_device *pdev)
 	/* Media controller + V4L2 device. */
 	s->media_dev.dev = dev;
 	strscpy(s->media_dev.model, "mtk-mt6785-cam", sizeof(s->media_dev.model));
+	/* the driver field is 16 bytes: libcamera matches on this name */
+	strscpy(s->media_dev.driver_name, "mt6785-cam",
+		sizeof(s->media_dev.driver_name));
 	media_device_init(&s->media_dev);
 
 	s->v4l2_dev.mdev = &s->media_dev;
