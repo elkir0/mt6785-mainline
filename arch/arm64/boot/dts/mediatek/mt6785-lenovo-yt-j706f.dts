@@ -295,6 +295,8 @@
 		reset-gpios = <&pio 119 GPIO_ACTIVE_LOW>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&cam0_mclk_on>;
+		/* autofocus actuator of this module (see the vcm node below) */
+		lens-focus = <&cam0_vcm>;
 		status = "okay";
 
 		port {
@@ -309,6 +311,25 @@
 				link-frequencies = /bits/ 64 <645000000 360000000 720000000>;
 			};
 		};
+	};
+
+	/*
+	 * Autofocus voice-coil actuator of cam0: an unidentified client at
+	 * 0x0c that answers whenever the vcamaf rail (GPIO197) is on
+	 * (docs/hardware/CAMERA.md).  The stock software and the begonia
+	 * notes do not name the part; the DW9714 protocol (one big-endian
+	 * 16-bit write, 10-bit DAC value << 4) is the common case for an
+	 * unidentified 0x0c actuator and the driver performs no chip
+	 * identification, so it drives any register-less DAC of that family.
+	 * tools/camera/vcm-probe.py can read/write the other candidate
+	 * protocols (dw9719/dw9768/ak7375) over /dev/i2c-2; if one of them
+	 * identifies the part, change the compatible and the supply name to
+	 * that driver's.
+	 */
+	cam0_vcm: vcm@c {
+		compatible = "dongwoon,dw9714";
+		reg = <0x0c>;
+		vcc-supply = <&vcamaf>;
 	};
 };
 

@@ -154,6 +154,18 @@
  * field changes, FBC_EN stays set.  The bounce path holds the DMA with
  * NUM = 0 while it copies.
  */
+/*
+ * Measured packer values that produce the le10 layout (CAMERA.md "Frame
+ * layout and first photo").  The fmt_sel/pak/bytes_per_px_x8 module
+ * parameters below override them at STREAMON for the layout sweep
+ * (tools/camera/layout-sweep.sh): libcamera's software ISP cannot read
+ * the le10 bitstream, and the hope is a FMT_SEL/PAK combination exists
+ * that writes each sample into a 16-bit container instead
+ * (V4L2_PIX_FMT_S*10, T13-LIBCAMERA.md section 2).
+ */
+#define CAMSV_FMT_SEL_LE10		0x102
+#define CAMSV_PAK_LE10			1
+
 #define CAMSV_FBC_NUM_MASK		GENMASK(5, 0)
 #define CAMSV_FBC2_WCNT			GENMASK(6, 0)	/* frames written */
 #define CAMSV_FBC2_DROP			GENMASK(31, 24)	/* frames dropped */
@@ -164,6 +176,33 @@ static unsigned int fbc_margin = 8;
 module_param(fbc_margin, uint, 0644);
 MODULE_PARM_DESC(fbc_margin,
 		 "Frames the FBC compare value is kept ahead of the written-frame count (2-32, default 8; read at STREAMON)");
+
+/*
+ * Packer layout sweep knobs (read at STREAMON): fmt_sel overrides the
+ * CAMSV FMT_SEL register (0x514, default 0x102 = the measured le10
+ * value), pak the PAK register (0x54c, default 1) and bytes_per_px_x8
+ * the bytes-per-line computation (0 = driver default width * 10 / 8;
+ * e.g. 16 = two bytes per pixel, the hoped-for 16-bit container layout).
+ * They only change how the DMA writes; the fourcc stays S*10P, so a
+ * swept capture still decodes with raw2rgb.py (--layout u16 for the
+ * 2-byte container, --layout le10 for the default).  See
+ * docs/research/camera/T13-LIBCAMERA.md section 2 and
+ * tools/camera/layout-sweep.sh.
+ */
+static unsigned int fmt_sel;
+module_param(fmt_sel, uint, 0644);
+MODULE_PARM_DESC(fmt_sel,
+		 "FMT_SEL register value written at STREAMON (0 = driver default 0x102, the measured le10 value)");
+
+static unsigned int pak = CAMSV_PAK_LE10;
+module_param(pak, uint, 0644);
+MODULE_PARM_DESC(pak,
+		 "PAK register value written at STREAMON (default 1, the measured le10 value; written as-is because 0 is a real PAK mode to sweep)");
+
+static unsigned int bytes_per_px_x8;
+module_param(bytes_per_px_x8, uint, 0644);
+MODULE_PARM_DESC(bytes_per_px_x8,
+		 "Bytes per pixel * 8 for the stride/BPL computation (0 = driver default 10; e.g. 16 = 2-byte container)");
 
 /*
  * Capture path (read at STREAMON):
@@ -281,12 +320,14 @@ struct mt6785_camsv_stats {
  * struct mt6785_camsv - CAMSV0 capture device
  * @dev: platform device
  * @base: mapped CAMSV0 registers
- * @larb6, @larb7: mapped SMI LARB registers for the MMU bypass
+ * @larb6: mapped SMI LARB6 registers for the MMU bypass
+ * @larb7: mapped SMI LARB7 registers for the MMU bypass
  * @clks: bulk clocks (cam, camsys gates, top seninf muxes, APMIXED 26 MHz)
  * @num_clks: number of entries in @clks
  * @sd: CAMSV subdev (sink from SENINF, source to the video node)
  * @pads: subdev pads: 0 sink (from seninf), 1 source (to video node)
  * @vdev: registered /dev/videoN capture node
+ * @vdev_pad: sink pad of the video node entity (from the subdev source)
  * @vbq: vb2 queue of @vdev
  * @vdev_lock: serializes format ioctls against the queue
  * @format: current V4L2 pixel format
@@ -297,6 +338,9 @@ struct mt6785_camsv_stats {
  * @streaming: streaming state
  * @rotate: zero-copy mode for this stream (module parameter)
  * @fbc_margin: FBC compare value lead for this stream (module parameter)
+ * @fmt_sel: FMT_SEL register value for this stream (module parameter, 0 = default)
+ * @pak: PAK register value for this stream (module parameter)
+ * @bytes_per_px_x8: bytes-per-pixel * 8 for this stream (module parameter, 0 = default)
  * @fbc_cur_num: FBC_CTL1 compare value last written (0: held)
  * @cur: rotate: the vb2 buffer programmed for the frame in progress
  *	(NULL: the scratch buffer); driver-owned until judged
@@ -344,6 +388,9 @@ struct mt6785_camsv {
 
 	bool rotate;
 	unsigned int fbc_margin;
+	u32 fmt_sel;
+	u32 pak;
+	u32 bytes_per_px_x8;
 	u32 fbc_cur_num;
 	struct mt6785_camsv_buffer *cur;
 	void *scratch;
@@ -439,6 +486,22 @@ static unsigned int camsv_bpl(unsigned int width)
 	return ALIGN(DIV_ROUND_UP(width * MT6785_CAM_BPP, 8), 2);
 }
 
+/*
+ * Bytes per line for the current sweep setting: bytes_per_px_x8 = 0 keeps
+ * the driver default (10 bits per pixel), any other value scales it
+ * (bytes per line = width * bytes_per_px_x8 / 8).  Called from S_FMT /
+ * queue_setup with the current parameter value.
+ */
+static unsigned int camsv_bpl_sweep(unsigned int width)
+{
+	unsigned int bpp_x8 = READ_ONCE(bytes_per_px_x8);
+
+	if (!bpp_x8 || bpp_x8 == MT6785_CAM_BPP)
+		return camsv_bpl(width);
+
+	return ALIGN(DIV_ROUND_UP(width * bpp_x8, 8), 2);
+}
+
 /* --------------------------------------------------------------------------
  * Hardware sequence (ov-cap.py setup_camsv0(), lines 339-368)
  */
@@ -529,8 +592,8 @@ static void camsv_hw_config(struct mt6785_camsv *c, dma_addr_t dma,
 	camsv_wr(c, CAMSV_TG_SEN_GRAB_PXL, w << 16);
 	camsv_wr(c, CAMSV_TG_SEN_GRAB_LIN, h << 16);
 	camsv_imgo_window(c, dma, h, bpl);
-	camsv_wr(c, CAMSV_FMT_SEL, 0x102);		/* measured le10 value */
-	camsv_wr(c, CAMSV_PAK, 1);			/* measured le10 value */
+	camsv_wr(c, CAMSV_FMT_SEL, c->fmt_sel ?: CAMSV_FMT_SEL_LE10);
+	camsv_wr(c, CAMSV_PAK, c->pak);
 	/* FBC_EN with the compare value ahead of the written count. */
 	c->last_wcnt = camsv_fbc_count(c);
 	camsv_fbc_run(c, c->last_wcnt);
@@ -1039,11 +1102,26 @@ static int camsv_vb2_start_streaming(struct vb2_queue *vq,
 	c->rotate = rotate;
 	c->fbc_margin = clamp_val(fbc_margin, CAMSV_FBC_MARGIN_MIN,
 				  CAMSV_FBC_MARGIN_MAX);
+	c->fmt_sel = fmt_sel;
+	c->pak = pak;
+	c->bytes_per_px_x8 = bytes_per_px_x8;
+	if (c->bytes_per_px_x8 == MT6785_CAM_BPP)
+		c->bytes_per_px_x8 = 0;		/* same as the default */
 	c->cur = NULL;
 	c->gated = false;
 	c->storm_start = jiffies;
 	c->storm_count = 0;
 	memset(&c->stats, 0, sizeof(c->stats));
+
+	/*
+	 * Layout sweep: the bytes-per-line follows bytes_per_px_x8, so
+	 * buffers queued for a different BPL must be re-derived.  S_FMT has
+	 * already run with the current parameter value; recompute here in
+	 * case the parameter changed since (vb2 is not streaming yet).
+	 */
+	c->format.bytesperline = c->bytes_per_px_x8 ?
+		camsv_bpl_sweep(c->format.width) : camsv_bpl(c->format.width);
+	c->format.sizeimage = c->format.bytesperline * c->format.height;
 
 	/*
 	 * Scratch buffer: the parking target (rotate) or the DMA target
@@ -1112,10 +1190,14 @@ static int camsv_vb2_start_streaming(struct vb2_queue *vq,
 	WRITE_ONCE(c->streaming, true);
 	camsv_hw_enable(c);
 
-	dev_dbg(c->dev, "streaming %ux%u, %s, FBC count %u compare %u, first target 0x%08x\n",
-		c->format.width, c->format.height,
-		c->rotate ? "zero copy" : "bounce buffer", c->last_wcnt,
-		c->fbc_cur_num, lower_32_bits(target));
+	dev_info(c->dev,
+		 "streaming %ux%u, FMT_SEL 0x%03x, PAK %u, bpl %u (%u/8 bytes/px), %s, FBC count %u compare %u, first target 0x%08x\n",
+		 c->format.width, c->format.height,
+		 c->fmt_sel ?: CAMSV_FMT_SEL_LE10, c->pak,
+		 c->format.bytesperline,
+		 c->bytes_per_px_x8 ?: MT6785_CAM_BPP,
+		 c->rotate ? "zero copy" : "bounce buffer", c->last_wcnt,
+		 c->fbc_cur_num, lower_32_bits(target));
 
 	return 0;
 
@@ -1327,7 +1409,7 @@ static void camsv_try_fmt(const struct mt6785_camsv *c,
 
 	pix->width = clamp(pix->width, 16U, 4624U);
 	pix->height = clamp(pix->height, 16U, 4032U);
-	pix->bytesperline = camsv_bpl(pix->width);
+	pix->bytesperline = camsv_bpl_sweep(pix->width);
 	pix->sizeimage = pix->bytesperline * pix->height;
 	pix->field = V4L2_FIELD_NONE;
 	pix->colorspace = V4L2_COLORSPACE_SRGB;
@@ -1613,6 +1695,10 @@ static int camsv_status_show(struct seq_file *m, void *v)
 		   c->rotate ? "zero copy (IMGO_BASE_ADDR per frame)" :
 			       "bounce buffer + copy",
 		   c->fbc_margin, READ_ONCE(c->streaming));
+	seq_printf(m, "layout      FMT_SEL 0x%03x, PAK %u, bpl %u (%u/8 bytes/px)\n",
+		   c->fmt_sel ?: CAMSV_FMT_SEL_LE10, c->pak,
+		   c->format.bytesperline,
+		   c->bytes_per_px_x8 ?: MT6785_CAM_BPP);
 	seq_printf(m, "INT_EN      0x%08x  (write-clear bit31 %d; 0 = masked)\n",
 		   int_en, !!(int_en & CAMSV_INT_WCLR_EN));
 	seq_printf(m, "TG_FRMSIZE  0x%08x  (%u px x %u lines)\n",
@@ -1740,7 +1826,7 @@ static int camsv_probe(struct platform_device *pdev)
 	c->format.pixelformat = camsv_formats[0].fourcc;
 	c->format.width = camsv_default_fmt.width;
 	c->format.height = camsv_default_fmt.height;
-	c->format.bytesperline = camsv_bpl(c->format.width);
+	c->format.bytesperline = camsv_bpl_sweep(c->format.width);
 	c->format.sizeimage = c->format.bytesperline * c->format.height;
 	c->format.field = V4L2_FIELD_NONE;
 	c->format.colorspace = V4L2_COLORSPACE_SRGB;
