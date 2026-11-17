@@ -79,6 +79,37 @@
 #define OV8856_TEST_PATTERN_ENABLE	BIT(7)
 #define OV8856_TEST_PATTERN_BAR_SHIFT	2
 
+/*
+ * Pixel array geometry, in registers 0x3800..0x3807 coordinates (X/Y
+ * start inclusive, X/Y end inclusive).
+ *
+ * Derived from the register tables below:
+ *   - the widest windows address X 0..3295 and Y 0..2479, so the full
+ *     addressable (native) array is 3296x2480;
+ *   - the 24 MHz full-size mode reads the window (0, 12, 3296, 2456)
+ *     and outputs 3264x2448; the ISP window offsets 0x3811 = 0x10 and
+ *     0x3813 = 0x04 trim it symmetrically to (16, 16, 3264, 2448);
+ *   - the 24 MHz 640x480 mode reads (336, 272, 2624, 1936) with 4x
+ *     decimation (0x3814 = 0x03), i.e. an effective window of
+ *     2560x1920 centred in that window at (368, 280), which is also
+ *     exactly centred in the 3264x2448 area above.  The 2x-binned
+ *     modes follow the same centring.  This pins the active area of
+ *     the 24 MHz ofilm module (the one on the MT6785 tablets) to
+ *     3264x2448 at (16, 16).
+ *
+ * Assumed: the 19.2 MHz (Intel module) tables describe the same
+ * silicon; their full-size mode reads boundary pixels outside the
+ * active area (window (0, 6, 3296, 2466), output 3280x2464), so
+ * CROP_BOUNDS reports the full addressable array rather than the
+ * active area: every mode's analogue crop must fit inside the bounds.
+ */
+#define OV8856_NATIVE_WIDTH		3296U
+#define OV8856_NATIVE_HEIGHT		2480U
+#define OV8856_PIXEL_ARRAY_LEFT		16U
+#define OV8856_PIXEL_ARRAY_TOP		16U
+#define OV8856_PIXEL_ARRAY_WIDTH	3264U
+#define OV8856_PIXEL_ARRAY_HEIGHT	2448U
+
 #define NUM_REGS				7
 #define NUM_MODE_REGS				187
 #define NUM_MODE_REGS_2				200
@@ -147,6 +178,9 @@ struct ov8856_mode {
 
 	/* Link frequency needed for this resolution */
 	u32 link_freq_index;
+
+	/* Effective analogue crop of this mode, array coordinates */
+	struct v4l2_rect crop;
 
 	/* Sensor register settings for this resolution */
 	const struct ov8856_reg_list reg_list;
@@ -2225,6 +2259,12 @@ static const struct ov8856_lane_cfg lane_cfg_2 = {
 		.hts = 1928,
 		.vts_def = 2488,
 		.vts_min = 2488,
+		.crop = {
+			.left = 0,
+			.top = 7,
+			.width = 3280,
+			.height = 2464,
+		},
 		.reg_list = {
 			.num_of_regs =
 			ARRAY_SIZE(lane_2_mode_3280x2464),
@@ -2240,6 +2280,12 @@ static const struct ov8856_lane_cfg lane_cfg_2 = {
 		.hts = 3168,
 		.vts_def = 1514,
 		.vts_min = 1514,
+		.crop = {
+			.left = 8,
+			.top = 10,
+			.width = 3280,
+			.height = 2464,
+		},
 		.reg_list = {
 			.num_of_regs =
 			ARRAY_SIZE(lane_2_mode_1640x1232),
@@ -2277,6 +2323,12 @@ static const struct ov8856_lane_cfg lane_cfg_2_24mhz = {
 		.hts = 1976,
 		.vts_def = 2530,
 		.vts_min = 2530,
+		.crop = {
+			.left = 16,
+			.top = 16,
+			.width = 3264,
+			.height = 2448,
+		},
 		.reg_list = {
 			.num_of_regs =
 			ARRAY_SIZE(lane_2_24mhz_mode_3264x2448),
@@ -2292,6 +2344,12 @@ static const struct ov8856_lane_cfg lane_cfg_2_24mhz = {
 		.hts = 1932,
 		.vts_def = 2482,
 		.vts_min = 2482,
+		.crop = {
+			.left = 16,
+			.top = 16,
+			.width = 3264,
+			.height = 2448,
+		},
 		.reg_list = {
 			.num_of_regs =
 			ARRAY_SIZE(lane_2_24mhz_mode_1632x1224),
@@ -2307,6 +2365,12 @@ static const struct ov8856_lane_cfg lane_cfg_2_24mhz = {
 		.hts = 1932,
 		.vts_def = 620,
 		.vts_min = 620,
+		.crop = {
+			.left = 368,
+			.top = 280,
+			.width = 2560,
+			.height = 1920,
+		},
 		.reg_list = {
 			.num_of_regs =
 			ARRAY_SIZE(lane_2_24mhz_mode_640x480),
@@ -2342,6 +2406,12 @@ static const struct ov8856_lane_cfg lane_cfg_4 = {
 			.hts = 1928,
 			.vts_def = 2488,
 			.vts_min = 2488,
+			.crop = {
+				.left = 0,
+				.top = 7,
+				.width = 3280,
+				.height = 2464,
+			},
 			.reg_list = {
 				.num_of_regs =
 				 ARRAY_SIZE(lane_4_mode_3280x2464),
@@ -2357,6 +2427,12 @@ static const struct ov8856_lane_cfg lane_cfg_4 = {
 			.hts = 3820,
 			.vts_def = 1256,
 			.vts_min = 1256,
+			.crop = {
+				.left = 8,
+				.top = 10,
+				.width = 3280,
+				.height = 2464,
+			},
 			.reg_list = {
 				.num_of_regs =
 				 ARRAY_SIZE(lane_4_mode_1640x1232),
@@ -2372,6 +2448,12 @@ static const struct ov8856_lane_cfg lane_cfg_4 = {
 			.hts = 1932,
 			.vts_def = 2482,
 			.vts_min = 2482,
+			.crop = {
+				.left = 4,
+				.top = 14,
+				.width = 3264,
+				.height = 2448,
+			},
 			.reg_list = {
 				.num_of_regs =
 				 ARRAY_SIZE(lane_4_mode_3264x2448),
@@ -2387,6 +2469,12 @@ static const struct ov8856_lane_cfg lane_cfg_4 = {
 			.hts = 1932,
 			.vts_def = 2482,
 			.vts_min = 2482,
+			.crop = {
+				.left = 4,
+				.top = 16,
+				.width = 3264,
+				.height = 2448,
+			},
 			.reg_list = {
 				.num_of_regs =
 				 ARRAY_SIZE(lane_4_mode_1632x1224),
@@ -2957,6 +3045,7 @@ static int ov8856_set_format(struct v4l2_subdev *sd,
 	ov8856_update_pad_format(ov8856, mode, &fmt->format);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 		*v4l2_subdev_state_get_format(sd_state, fmt->pad) = fmt->format;
+		*v4l2_subdev_state_get_crop(sd_state, fmt->pad) = mode->crop;
 	} else {
 		ov8856->cur_mode = mode;
 		__v4l2_ctrl_s_ctrl(ov8856->link_freq, mode->link_freq_index);
@@ -3040,13 +3129,58 @@ static int ov8856_enum_frame_size(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int ov8856_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+static int ov8856_get_selection(struct v4l2_subdev *sd,
+				struct v4l2_subdev_state *sd_state,
+				struct v4l2_subdev_selection *sel)
 {
 	struct ov8856 *ov8856 = to_ov8856(sd);
 
+	switch (sel->target) {
+	case V4L2_SEL_TGT_CROP:
+		if (sel->which != V4L2_SUBDEV_FORMAT_TRY &&
+		    sel->which != V4L2_SUBDEV_FORMAT_ACTIVE)
+			return -EINVAL;
+
+		mutex_lock(&ov8856->mutex);
+		if (sel->which == V4L2_SUBDEV_FORMAT_TRY)
+			sel->r = *v4l2_subdev_state_get_crop(sd_state,
+							     sel->pad);
+		else
+			sel->r = ov8856->cur_mode->crop;
+		mutex_unlock(&ov8856->mutex);
+		return 0;
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+		sel->r.left = OV8856_PIXEL_ARRAY_LEFT;
+		sel->r.top = OV8856_PIXEL_ARRAY_TOP;
+		sel->r.width = OV8856_PIXEL_ARRAY_WIDTH;
+		sel->r.height = OV8856_PIXEL_ARRAY_HEIGHT;
+		return 0;
+	case V4L2_SEL_TGT_CROP_BOUNDS:
+	case V4L2_SEL_TGT_NATIVE_SIZE:
+		/*
+		 * The 19.2 MHz full-size modes read boundary pixels
+		 * outside the active area, so bounds must cover the
+		 * whole addressable array to contain every mode's crop.
+		 */
+		sel->r.left = 0;
+		sel->r.top = 0;
+		sel->r.width = OV8856_NATIVE_WIDTH;
+		sel->r.height = OV8856_NATIVE_HEIGHT;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int ov8856_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+{
+	struct ov8856 *ov8856 = to_ov8856(sd);
+	const struct ov8856_mode *mode = &ov8856->priv_lane->supported_modes[0];
+
 	mutex_lock(&ov8856->mutex);
-	ov8856_update_pad_format(ov8856, &ov8856->priv_lane->supported_modes[0],
+	ov8856_update_pad_format(ov8856, mode,
 				 v4l2_subdev_state_get_format(fh->state, 0));
+	*v4l2_subdev_state_get_crop(fh->state, 0) = mode->crop;
 	mutex_unlock(&ov8856->mutex);
 
 	return 0;
@@ -3061,6 +3195,7 @@ static const struct v4l2_subdev_pad_ops ov8856_pad_ops = {
 	.get_fmt = ov8856_get_format,
 	.enum_mbus_code = ov8856_enum_mbus_code,
 	.enum_frame_size = ov8856_enum_frame_size,
+	.get_selection = ov8856_get_selection,
 };
 
 static const struct v4l2_subdev_ops ov8856_subdev_ops = {

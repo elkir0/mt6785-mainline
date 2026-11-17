@@ -76,6 +76,30 @@
 #define S5K4H7_DATA_LANES		4
 #define S5K4H7_BITS_PER_SAMPLE		10
 
+/*
+ * Pixel array geometry, in crop-register coordinates (0x0344/0x0345
+ * hold the first column, 0x0346/0x0347 the first row).
+ *
+ * Derived from the register tables above:
+ *   - the capture table addresses X 8..3271 and Y 8..2455
+ *     (0x0344..0x034b), a 3264x2448 window at (8, 8): the active area;
+ *   - the 16:9 window (top 314) and the 640x480 window (left 360,
+ *     top 272) sit exactly centred in it (8 + (2448 - 1836) / 2 = 314,
+ *     8 + (3264 - 2560) / 2 = 360, 8 + (2448 - 1920) / 2 = 272),
+ *     which confirms the offsets.
+ *
+ * Assumed: the native array is the active area plus the 8 boundary
+ * pixels the (8, 8) start implies, symmetric on all four sides
+ * (3280x2464).  The vendor tables never address pixels outside the
+ * active area, so a wider boundary margin is not observable from them.
+ */
+#define S5K4H7_NATIVE_WIDTH		3280U
+#define S5K4H7_NATIVE_HEIGHT		2464U
+#define S5K4H7_PIXEL_ARRAY_LEFT		8U
+#define S5K4H7_PIXEL_ARRAY_TOP		8U
+#define S5K4H7_PIXEL_ARRAY_WIDTH	3264U
+#define S5K4H7_PIXEL_ARRAY_HEIGHT	2448U
+
 /* All vendor modes use pclk 280 MHz: link 700 Mbps x 4 lanes / 10 bits */
 #define S5K4H7_LINK_FREQ_700MHZ		(700 * HZ_PER_MHZ)
 #define S5K4H7_PIXEL_RATE		(S5K4H7_LINK_FREQ_700MHZ * 2 * \
@@ -395,10 +419,19 @@ struct s5k4h7_mode {
 	u32 exposure_default;		/* Default exposure, lines */
 	u32 exposure_margin;		/* Margin between VTS and exposure */
 
+	/* Analogue crop rectangle, crop-register coordinates */
+	struct v4l2_rect crop;
+
 	const struct s5k4h7_reg_list reg_list;
 };
 
-/* All modes run the same 280 MHz pixel clock, HTS 3688 */
+/*
+ * All modes run the same 280 MHz pixel clock, HTS 3688.  Crop
+ * rectangles are read from each table's 0x0344..0x034b window registers
+ * (start inclusive, end inclusive): full active area for 3264x2448 and
+ * the 2x2-binned 1632x1224, 16:9 window for 3264x1836, 2560x1920
+ * 4x4-binned window for 640x480.
+ */
 static const struct s5k4h7_mode s5k4h7_modes[] = {
 	{
 		.width = 3264,
@@ -407,6 +440,12 @@ static const struct s5k4h7_mode s5k4h7_modes[] = {
 		.vts = 2530,
 		.exposure_default = 0x208,
 		.exposure_margin = 6,
+		.crop = {
+			.left = 8,
+			.top = 8,
+			.width = 3264,
+			.height = 2448,
+		},
 		.reg_list = {
 			.regs = s5k4h7_3264x2448_30fps_regs,
 			.num_regs = ARRAY_SIZE(s5k4h7_3264x2448_30fps_regs),
@@ -419,6 +458,12 @@ static const struct s5k4h7_mode s5k4h7_modes[] = {
 		.vts = 2530,
 		.exposure_default = 0x208,
 		.exposure_margin = 6,
+		.crop = {
+			.left = 8,
+			.top = 314,
+			.width = 3264,
+			.height = 1836,
+		},
 		.reg_list = {
 			.regs = s5k4h7_3264x1836_30fps_regs,
 			.num_regs = ARRAY_SIZE(s5k4h7_3264x1836_30fps_regs),
@@ -431,6 +476,12 @@ static const struct s5k4h7_mode s5k4h7_modes[] = {
 		.vts = 2530,
 		.exposure_default = 0x208,
 		.exposure_margin = 6,
+		.crop = {
+			.left = 8,
+			.top = 8,
+			.width = 3264,
+			.height = 2448,
+		},
 		.reg_list = {
 			.regs = s5k4h7_1632x1224_30fps_regs,
 			.num_regs = ARRAY_SIZE(s5k4h7_1632x1224_30fps_regs),
@@ -443,6 +494,12 @@ static const struct s5k4h7_mode s5k4h7_modes[] = {
 		.vts = 0x278,
 		.exposure_default = 0x208,
 		.exposure_margin = 6,
+		.crop = {
+			.left = 360,
+			.top = 272,
+			.width = 2560,
+			.height = 1920,
+		},
 		.reg_list = {
 			.regs = s5k4h7_640x480_120fps_regs,
 			.num_regs = ARRAY_SIZE(s5k4h7_640x480_120fps_regs),
@@ -675,6 +732,7 @@ static int s5k4h7_set_pad_format(struct v4l2_subdev *sd,
 	struct s5k4h7 *s5k4h7 = to_s5k4h7(sd);
 	s64 hblank, vblank, exposure_max;
 	const struct s5k4h7_mode *mode;
+	struct v4l2_rect *crop;
 
 	mode = v4l2_find_nearest_size(s5k4h7_modes,
 				      ARRAY_SIZE(s5k4h7_modes),
@@ -682,6 +740,7 @@ static int s5k4h7_set_pad_format(struct v4l2_subdev *sd,
 				      fmt->format.width, fmt->format.height);
 
 	s5k4h7_update_pad_format(s5k4h7, mode, &fmt->format);
+	crop = v4l2_subdev_state_get_crop(state, 0);
 
 	/* Format code can change with the flip controls */
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY || s5k4h7->mode == mode)
@@ -709,6 +768,7 @@ static int s5k4h7_set_pad_format(struct v4l2_subdev *sd,
 
 set_format:
 	*v4l2_subdev_state_get_format(state, 0) = fmt->format;
+	*crop = mode->crop;
 
 	return 0;
 }
@@ -726,6 +786,35 @@ static int s5k4h7_enum_mbus_code(struct v4l2_subdev *sd,
 	code->code = s5k4h7_get_format_code(s5k4h7);
 
 	return 0;
+}
+
+static int s5k4h7_get_selection(struct v4l2_subdev *sd,
+				struct v4l2_subdev_state *state,
+				struct v4l2_subdev_selection *sel)
+{
+	if (sel->pad != 0)
+		return -EINVAL;
+
+	switch (sel->target) {
+	case V4L2_SEL_TGT_CROP:
+		sel->r = *v4l2_subdev_state_get_crop(state, 0);
+		return 0;
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+	case V4L2_SEL_TGT_CROP_BOUNDS:
+		sel->r.top = S5K4H7_PIXEL_ARRAY_TOP;
+		sel->r.left = S5K4H7_PIXEL_ARRAY_LEFT;
+		sel->r.width = S5K4H7_PIXEL_ARRAY_WIDTH;
+		sel->r.height = S5K4H7_PIXEL_ARRAY_HEIGHT;
+		return 0;
+	case V4L2_SEL_TGT_NATIVE_SIZE:
+		sel->r.top = 0;
+		sel->r.left = 0;
+		sel->r.width = S5K4H7_NATIVE_WIDTH;
+		sel->r.height = S5K4H7_NATIVE_HEIGHT;
+		return 0;
+	default:
+		return -EINVAL;
+	}
 }
 
 static int s5k4h7_enum_frame_size(struct v4l2_subdev *sd,
@@ -845,6 +934,7 @@ static const struct v4l2_subdev_pad_ops s5k4h7_pad_ops = {
 	.get_fmt = v4l2_subdev_get_fmt,
 	.enum_mbus_code = s5k4h7_enum_mbus_code,
 	.enum_frame_size = s5k4h7_enum_frame_size,
+	.get_selection = s5k4h7_get_selection,
 	.enable_streams = s5k4h7_enable_streams,
 	.disable_streams = s5k4h7_disable_streams,
 };
