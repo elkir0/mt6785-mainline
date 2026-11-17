@@ -298,15 +298,12 @@
 		/* autofocus actuator of this module (see the vcm node below) */
 		lens-focus = <&cam0_vcm>;
 		/*
-		 * PROVISIONAL mounting information (V4L2 fwnode properties,
-		 * parsed by the ov8856 driver into CAMERA_ORIENTATION /
-		 * CAMERA_SENSOR_ROTATION): cam0 is the rear camera; the
-		 * rotation (sensor scan direction vs. the panel's native
-		 * landscape orientation) is a guess until checked against the
-		 * test-pattern bars in libcamera.
+		 * Mounting information (V4L2 fwnode properties): cam0 is the
+		 * rear camera. With the tablet standing in landscape on its
+		 * kickstand the stored picture is upright.
 		 */
 		orientation = <1>;	/* V4L2_FWNODE_ORIENTATION_BACK */
-		rotation = <90>;
+		rotation = <0>;
 		status = "okay";
 
 		port {
@@ -390,15 +387,12 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&cam1_mclk_on>;
 		/*
-		 * PROVISIONAL mounting information (V4L2 fwnode properties,
-		 * parsed by the s5k4h7 driver into CAMERA_ORIENTATION /
-		 * CAMERA_SENSOR_ROTATION): cam1 is ASSUMED to be the front
-		 * camera (its output has only been captured in a dark room);
-		 * the rotation is a guess until a real frame is seen in
-		 * libcamera.
+		 * Mounting information (V4L2 fwnode properties): cam1 is the
+		 * front camera. With the tablet standing in landscape on its
+		 * kickstand the stored picture is upside down.
 		 */
 		orientation = <0>;	/* V4L2_FWNODE_ORIENTATION_FRONT */
-		rotation = <270>;
+		rotation = <180>;
 		status = "okay";
 
 		port {
