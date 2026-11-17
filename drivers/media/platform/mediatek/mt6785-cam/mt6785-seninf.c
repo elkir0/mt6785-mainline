@@ -16,9 +16,13 @@
  *           -> camsv0 subdev -> /dev/videoN
  *
  * The seninf is an input selector: every bound sensor is linked to the
- * sink pad of its CSI port, at most one of those links is enabled (the
- * OV8856 on port 1 by default, switched with `media-ctl -l`), only that
- * one is validated and streamed, and the source pad mirrors its format.
+ * sink pad of its CSI port, exactly one of those links is enabled (the
+ * OV8856 on port 1 by default), only that one is validated and
+ * streamed, and the source pad mirrors its format.  Enabling another
+ * sensor's link while not streaming switches the selection: the
+ * previously enabled link is disabled automatically (one `media-ctl -l`
+ * call or libcamera's own link setup), so enumeration never sees a
+ * disabled-by-default link block it.
  *
  * The source pad always routes through SENINF mux 2 / CAM_MUX 2 because
  * CAMSV0 is hardwired to cam_mux 2 on this SoC.
@@ -495,17 +499,18 @@ static void seninf_hw_stream_off(struct mt6785_seninf *s, int port)
  * Default format on every pad: the validated capture geometry
  * (640x480 SBGGR10, the ov8856 24 MHz mode), so a fresh boot has a
  * coherent pipeline and link validation passes without userspace
- * setting every pad by hand.
+ * setting every pad by hand.  Raw Bayer on the bus: colorspace raw,
+ * no transfer function.
  */
 static const struct v4l2_mbus_framefmt seninf_default_fmt = {
 	.code = MEDIA_BUS_FMT_SBGGR10_1X10,
 	.width = 640,
 	.height = 480,
 	.field = V4L2_FIELD_NONE,
-	.colorspace = V4L2_COLORSPACE_SRGB,
+	.colorspace = V4L2_COLORSPACE_RAW,
 	.ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT,
 	.quantization = V4L2_QUANTIZATION_DEFAULT,
-	.xfer_func = V4L2_XFER_FUNC_DEFAULT,
+	.xfer_func = V4L2_XFER_FUNC_NONE,
 };
 
 /* Bayer media bus codes passed through unchanged (subset of what the
@@ -616,6 +621,40 @@ static int seninf_set_fmt(struct v4l2_subdev *sd,
 		seninf_sync_source_fmt(state, fmt->pad);
 
 	return 0;
+}
+
+/*
+ * Frame sizes: the pass-through geometry takes whatever the sensor
+ * offers.  On the sink pads ask the sensor bound there (its mode
+ * table); on the source pad ask the sensor of the selected port, so
+ * userspace (and libcamera) can enumerate sizes through either side of
+ * the receiver.  The caller's bus code is forwarded as-is: the sensor
+ * rejects the codes it does not emit, which is the correct answer.
+ */
+static int seninf_enum_frame_size(struct v4l2_subdev *sd,
+				    struct v4l2_subdev_state *state,
+				    struct v4l2_subdev_frame_size_enum *fse)
+{
+	struct mt6785_seninf *s = sd_to_seninf(sd);
+	int port;
+	u32 i;
+
+	for (i = 0; i < ARRAY_SIZE(seninf_bus_codes); i++)
+		if (seninf_bus_codes[i] == fse->code)
+			break;
+	if (i == ARRAY_SIZE(seninf_bus_codes))
+		return -EINVAL;
+
+	if (fse->pad >= MT6785_CAM_NUM_PADS)
+		return -EINVAL;
+
+	port = fse->pad == MT6785_CAM_PAD_SRC ? seninf_enabled_port(s) :
+						fse->pad;
+	if (port < 0 || !s->ports[port].sd)
+		return -ENODEV;
+
+	return v4l2_subdev_call(s->ports[port].sd, pad, enum_frame_size,
+				NULL, fse);
 }
 
 static int seninf_init_state(struct v4l2_subdev *sd,
@@ -732,6 +771,7 @@ static int seninf_link_validate(struct v4l2_subdev *sd,
 
 static const struct v4l2_subdev_pad_ops seninf_pad_ops = {
 	.enum_mbus_code = seninf_enum_mbus_code,
+	.enum_frame_size = seninf_enum_frame_size,
 	.get_fmt = v4l2_subdev_get_fmt,
 	.set_fmt = seninf_set_fmt,
 	.link_validate = seninf_link_validate,
@@ -754,9 +794,13 @@ static const struct v4l2_subdev_internal_ops seninf_internal_ops = {
  * Link selection rules (the t8d-boot lesson: two ENABLED|IMMUTABLE
  * sensor links made every link validation fail and nothing streamed):
  *
- * - sensor->seninf links are not immutable; at most one is ENABLED.
- *   Enabling a second one is refused (-EBUSY): switching sensors is
- *   disable the old link, then enable the new one.
+ * - sensor->seninf links are not immutable; exactly one is ENABLED.
+ *   Enabling a second link while not streaming SWITCHES the selection:
+ *   the previously enabled link is disabled here (the core then only
+ *   has to set the new flag), so a plain `media-ctl -l ... [1]` — or
+ *   libcamera's simple pipeline, which enables links itself without a
+ *   disable-first dance — selects a sensor in one call.  Switching
+ *   while streaming stays refused (-EBUSY).
  * - no link change while streaming (the core refuses it too: the sink
  *   pads are part of the started pipeline).
  * - enabling a sensor link copies that sink pad's format to the source
@@ -790,10 +834,28 @@ static int seninf_link_setup(struct media_entity *entity,
 	port = local->index;
 	enabled = seninf_enabled_port(s);
 	if (enabled >= 0 && enabled != port) {
-		dev_err(s->dev,
-			"CSI port %d is already selected; disable its link before enabling port %d\n",
-			enabled, port);
-		return -EBUSY;
+		struct media_link *link;
+
+		dev_info(s->dev,
+			 "CSI port %d selected: disabling the port %d link\n",
+			 port, enabled);
+
+		/*
+		 * Drop the other enabled link first, by hand: this runs
+		 * before the core sets the new flag, and the core's own
+		 * one-link-at-a-time loop is not involved in a single
+		 * setup_link call.  Only the data link's flag changes; its
+		 * reverse mirrors it.
+		 */
+		list_for_each_entry(link, &sd->entity.links, list) {
+			if (link->sink == &s->pads[enabled] &&
+			    (link->flags & MEDIA_LNK_FL_ENABLED) &&
+			    !(link->flags & MEDIA_LNK_FL_IMMUTABLE)) {
+				link->flags &= ~MEDIA_LNK_FL_ENABLED;
+				link->reverse->flags = link->flags;
+				break;
+			}
+		}
 	}
 
 	state = v4l2_subdev_lock_and_get_active_state(sd);
