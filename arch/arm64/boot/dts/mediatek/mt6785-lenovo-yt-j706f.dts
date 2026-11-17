@@ -899,4 +899,57 @@
 	status = "okay";
 };
 
+/*
+ * M2 camera bring-up test-model nodes (SoC SENINF + CAMSV0 + MIPI RX ANA/CDPHY).
+ * Two power domains are listed on purpose so genpd does not power CAM on at
+ * probe; the modules attach "cam" explicitly via debugfs power=1.
+ */
+&{/soc} {
+	seninf_tm: seninf-tm@1a040000 {
+		compatible = "mediatek,mt6785-seninf-tm";
+		reg = <0 0x1a040000 0 0x6000>;
+		power-domains = <&spm MT6785_POWER_DOMAIN_CAM>,
+				<&spm MT6785_POWER_DOMAIN_ISP>;
+		power-domain-names = "cam", "isp";
+		clocks = <&camsys CLK_CAM_MAIN>,
+			 <&camsys CLK_CAM_GALS>,
+			 <&camsys CLK_CAM_TG>,
+			 <&camsys CLK_CAM_SENINF>,
+			 <&topckgen CLK_TOP_SENINF0>,
+			 <&topckgen CLK_TOP_SENINF1>,
+			 <&topckgen CLK_TOP_SENINF2>;
+		clock-names = "cam-main", "cam-gals", "cam-tg", "cam-seninf",
+			      "top-seninf0", "top-seninf1", "top-seninf2";
+	};
+
+	camsv_tm: camsv-tm@1a050000 {
+		compatible = "mediatek,mt6785-camsv-tm";
+		reg = <0 0x1a040000 0 0x6000>,	/* SENINF */
+		      <0 0x1a050000 0 0x1000>,	/* CAMSV0 */
+		      <0 0x1a000000 0 0x1000>,	/* camsys */
+		      <0 0x11c80000 0 0xc000>;	/* MIPI RX ANA/CDPHY (CSI0..2) */
+		power-domains = <&spm MT6785_POWER_DOMAIN_CAM>,
+				<&spm MT6785_POWER_DOMAIN_ISP>;
+		power-domain-names = "cam", "isp";
+		clocks = <&camsys CLK_CAM_MAIN>,
+			 <&camsys CLK_CAM_GALS>,
+			 <&camsys CLK_CAM_TG>,
+			 <&camsys CLK_CAM_SENINF>,
+			 <&camsys CLK_CAM_SV0>,
+			 <&camsys CLK_CAM_SV1>,
+			 <&camsys CLK_CAM_LARB6>,
+			 <&camsys CLK_CAM_LARB7>,
+			 <&topckgen CLK_TOP_SENINF0>,
+			 <&topckgen CLK_TOP_SENINF1>,
+			 <&topckgen CLK_TOP_SENINF2>,
+			 <&apmixedsys CLK_APMIXED_MIPIC0>,
+			 <&apmixedsys CLK_APMIXED_MIPIC1>;
+		clock-names = "cam-main", "cam-gals", "cam-tg", "cam-seninf",
+			      "cam-sv0", "cam-sv1", "cam-larb6", "cam-larb7",
+			      "top-seninf0", "top-seninf1", "top-seninf2",
+			      "mipic0", "mipic1";
+		mediatek,larb = <&larb6>;
+	};
+};
+
 #include "mt6785-lenovo-yt-j706f-audio.dtsi"

@@ -14,3 +14,5 @@ obj-$(CONFIG_GREYBUS)		+= greybus/
 obj-$(CONFIG_BCM2835_VCHIQ)	+= vc04_services/
 obj-$(CONFIG_XIL_AXIS_FIFO)	+= axis-fifo/
 obj-$(CONFIG_YT11_CAM_PROBE)	+= yt11-cam/
+obj-$(CONFIG_MT6785_SENINF_TM)	+= yt11-cam/
+obj-$(CONFIG_MT6785_CAMSV_TM)	+= yt11-cam/

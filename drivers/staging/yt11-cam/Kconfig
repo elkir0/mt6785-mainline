@@ -8,3 +8,23 @@ config YT11_CAM_PROBE
 	  It exposes a debugfs interface under /sys/kernel/debug/yt11-cam/
 	  to power one camera slot at a time and enable its 24 MHz CAMTG
 	  master clock so userspace can probe sensor chip IDs over I2C.
+
+config MT6785_SENINF_TM
+	tristate "MediaTek MT6785 SENINF test-model bring-up driver"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on OF && COMMON_CLK && PM
+	help
+	  Say Y or M here for the MT6785 SENINF test-pattern bring-up driver.
+	  It exposes /sys/kernel/debug/seninf-tm/ (power, start, dump) to
+	  verify the CAM power domain, SENINF clocks, and SENINF0 -> MUX0 ->
+	  CAM_MUX0 test-pattern generation without a sensor or DMA.
+
+config MT6785_CAMSV_TM
+	tristate "MediaTek MT6785 CAMSV0 capture test-harness driver"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on OF && COMMON_CLK && PM && HAS_DMA
+	help
+	  Say Y or M here for the MT6785 CAMSV0 test-capture driver.
+	  It exposes /sys/kernel/debug/camsv-tm/ (power, buf, fill, w, r,
+	  bufdump, frame) to drive SENINF/ANA/CAMSV0/CAMSYS registers and
+	  capture raw frames into a coherent DMA buffer.
