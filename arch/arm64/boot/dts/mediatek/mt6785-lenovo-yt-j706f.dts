@@ -98,6 +98,32 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&wifi_enable_pins>;
 	};
+
+	/* M0 camera power-up probe (no sensor nodes yet; driven via debugfs) */
+	camera_probe: camera-probe {
+		compatible = "lenovo,yt-j706f-cam-probe";
+		vcamio-supply = <&mt6359_vcamio_ldo_reg>;
+		vcama-gpios = <&pio 195 GPIO_ACTIVE_HIGH>;
+		vcamd-gpios = <&pio 50 GPIO_ACTIVE_HIGH>;
+		vcamaf-gpios = <&pio 197 GPIO_ACTIVE_HIGH>;
+		cam0-reset-gpios = <&pio 119 GPIO_ACTIVE_HIGH>;
+		cam1-reset-gpios = <&pio 124 GPIO_ACTIVE_HIGH>;
+		clocks = <&topckgen CLK_TOP_CAMTG1>,
+			 <&topckgen CLK_TOP_CAMTG2>,
+			 <&topckgen CLK_TOP_CAMTG3>,
+			 <&topckgen CLK_TOP_CAMTG4>,
+			 <&topckgen CLK_TOP_CAMTG5>,
+			 <&topckgen CLK_TOP_UNIVPLL_192M_D8>;
+		clock-names = "camtg1", "camtg2", "camtg3", "camtg4",
+			      "camtg5", "src24";
+		pinctrl-names = "default", "cam0_mclk_off", "cam0_mclk_on",
+				"cam1_mclk_off", "cam1_mclk_on";
+		pinctrl-0 = <&cam_gpio_pins>, <&cam0_mclk_off>, <&cam1_mclk_off>;
+		pinctrl-1 = <&cam0_mclk_off>;
+		pinctrl-2 = <&cam0_mclk_on>;
+		pinctrl-3 = <&cam1_mclk_off>;
+		pinctrl-4 = <&cam1_mclk_on>;
+	};
 };
 
 &cci {
@@ -199,6 +225,14 @@
 	};
 };
 
+/* Camera I2C bus 2 (stock: i2c2 @ 0x11009000, 400 kHz) */
+&i2c2 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c2_pins>;
+	status = "okay";
+};
+
 /*
  * TI bq27541 fuel gauge (stock: i2c3 0x55). The stock bus runs at the
  * vendor driver's default 100 kHz; at 400 kHz the gauge's second data byte
@@ -214,6 +248,14 @@
 		compatible = "ti,bq27541";
 		reg = <0x55>;
 	};
+};
+
+/* Camera I2C bus 4 (stock: i2c4 @ 0x11011000, 400 kHz) */
+&i2c4 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c4_pins>;
+	status = "okay";
 };
 
 /*
@@ -590,10 +632,26 @@
 		};
 	};
 
+	i2c2_pins: i2c2-pins {
+		pins-bus {
+			pinmux = <PINMUX_GPIO112__FUNC_SCL2>,
+				 <PINMUX_GPIO113__FUNC_SDA2>;
+			bias-pull-up;
+		};
+	};
+
 	i2c3_pins: i2c3-pins {
 		pins-bus {
 			pinmux = <PINMUX_GPIO55__FUNC_SCL3>,
 				 <PINMUX_GPIO56__FUNC_SDA3>;
+			bias-pull-up;
+		};
+	};
+
+	i2c4_pins: i2c4-pins {
+		pins-bus {
+			pinmux = <PINMUX_GPIO110__FUNC_SCL4>,
+				 <PINMUX_GPIO111__FUNC_SDA4>;
 			bias-pull-up;
 		};
 	};
@@ -603,6 +661,45 @@
 			pinmux = <PINMUX_GPIO28__FUNC_SCL5>,
 				 <PINMUX_GPIO29__FUNC_SDA5>;
 			bias-pull-up;
+		};
+	};
+
+	cam_gpio_pins: cam-gpio-pins {
+		pins-gpio {
+			pinmux = <PINMUX_GPIO50__FUNC_GPIO50>,
+				 <PINMUX_GPIO119__FUNC_GPIO119>,
+				 <PINMUX_GPIO124__FUNC_GPIO124>,
+				 <PINMUX_GPIO195__FUNC_GPIO195>,
+				 <PINMUX_GPIO197__FUNC_GPIO197>;
+			output-low;
+		};
+	};
+
+	cam0_mclk_off: cam0-mclk-off {
+		pins-mclk {
+			pinmux = <PINMUX_GPIO117__FUNC_GPIO117>;
+			output-low;
+		};
+	};
+
+	cam0_mclk_on: cam0-mclk-on {
+		pins-mclk {
+			pinmux = <PINMUX_GPIO117__FUNC_CMMCLK1>;
+			drive-strength = <4>;
+		};
+	};
+
+	cam1_mclk_off: cam1-mclk-off {
+		pins-mclk {
+			pinmux = <PINMUX_GPIO120__FUNC_GPIO120>;
+			output-low;
+		};
+	};
+
+	cam1_mclk_on: cam1-mclk-on {
+		pins-mclk {
+			pinmux = <PINMUX_GPIO120__FUNC_CMMCLK2>;
+			drive-strength = <4>;
 		};
 	};
 

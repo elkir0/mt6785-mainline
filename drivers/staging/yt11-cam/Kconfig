@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0
+config YT11_CAM_PROBE
+	tristate "Lenovo Yoga Tab 11 (YT-J706F) camera power-up probe"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on OF && COMMON_CLK && PINCTRL && REGULATOR && GPIOLIB
+	help
+	  Say Y or M here for the YT-J706F M0 camera bring-up probe driver.
+	  It exposes a debugfs interface under /sys/kernel/debug/yt11-cam/
+	  to power one camera slot at a time and enable its 24 MHz CAMTG
+	  master clock so userspace can probe sensor chip IDs over I2C.
