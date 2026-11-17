@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config VIDEO_MEDIATEK_MT6785_CAM
+	tristate "MediaTek MT6785 camera (SENINF CSI-2 receiver + CAMSV0 capture)"
+	depends on V4L_PLATFORM_DRIVERS
+	depends on VIDEO_DEV
+	depends on (ARCH_MEDIATEK && OF) || COMPILE_TEST
+	depends on PM
+	select MEDIA_CONTROLLER
+	select VIDEOBUF2_CORE
+	select VIDEOBUF2_V4L2
+	select VIDEOBUF2_DMA_CONTIG
+	select VIDEOBUF2_MEMOPS
+	select V4L2_FWNODE
+	select V4L2_ASYNC
+	help
+	  Camera support for the MediaTek MT6785 (Helio G90T) SoC: a V4L2
+	  subdev for the SENINF MIPI CSI-2 sensor interface (binding sensor
+	  subdevs through the device tree endpoints) and a video capture
+	  node for CAMSV0, the raw-frame DMA pipe through SENINF mux 2.
+	  Frames are captured as MIPI-packed 10-bit Bayer (V4L2_PIX_FMT_S*10P)
+	  into physically contiguous buffers with the camera LARB SMI MMU
+	  bypassed; proper IOMMU support is not implemented yet.
+
+	  To compile this driver as modules choose M here: the modules will
+	  be called mt6785-seninf and mt6785-camsv.

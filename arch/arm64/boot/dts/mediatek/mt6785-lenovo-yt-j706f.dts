@@ -99,7 +99,12 @@
 		pinctrl-0 = <&wifi_enable_pins>;
 	};
 
-	/* M0 camera power-up probe (no sensor nodes yet; driven via debugfs) */
+	/*
+	 * M0 camera power-up probe (driven via debugfs).  Disabled now that
+	 * the real sensor node and the vcama/vcamd/vcamaf regulators own
+	 * the same GPIOs: yt11-cam-probe claims them with devm_gpiod_get,
+	 * which would collide with the regulators' enable GPIOs.
+	 */
 	camera_probe: camera-probe {
 		compatible = "lenovo,yt-j706f-cam-probe";
 		vcamio-supply = <&mt6359_vcamio_ldo_reg>;
@@ -123,6 +128,44 @@
 		pinctrl-2 = <&cam0_mclk_on>;
 		pinctrl-3 = <&cam1_mclk_off>;
 		pinctrl-4 = <&cam1_mclk_on>;
+		status = "disabled";
+	};
+
+	/*
+	 * Camera supply switches (docs/hardware/CAMERA.md): vcama (2.8 V
+	 * analog) and vcamd (1.1 V digital) are GPIO-switched rails shared
+	 * by both sensor slots, vcamaf powers the cam0 autofocus VCM.
+	 * vcamio (1.8 V I/O) is the MT6359 vcamio LDO.  Each regulator
+	 * holds only its own pin in pinctrl: a pinctrl state is exclusive
+	 * per device, so sharing one group would make the second regulator
+	 * fail its probe with -EBUSY and defer the sensor forever (seen
+	 * on the first T8 boot).
+	 */
+	vcama: regulator-vcama {
+		compatible = "regulator-fixed";
+		regulator-name = "vcama";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		gpio = <&pio 195 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	vcamd: regulator-vcamd {
+		compatible = "regulator-fixed";
+		regulator-name = "vcamd";
+		regulator-min-microvolt = <1100000>;
+		regulator-max-microvolt = <1100000>;
+		gpio = <&pio 50 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	vcamaf: regulator-vcamaf {
+		compatible = "regulator-fixed";
+		regulator-name = "vcamaf";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		gpio = <&pio 197 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
 	};
 };
 
@@ -225,13 +268,48 @@
 	};
 };
 
-/* Camera I2C bus 2 (stock: i2c2 @ 0x11009000, 400 kHz) */
+/*
+ * Camera I2C bus 2 (stock: i2c2 @ 0x11009000, 400 kHz).  cam0 is the
+ * rear OmniVision OV8856 (0x36, chip ID 0x885a; also answers at 0x21),
+ * 24 MHz MCLK on GPIO117 (CMMCLK1 = CLK_TOP_CAMTG2), reset GPIO119,
+ * 2 data lanes into MIPI CSI port 1 -> SENINF2 -> mux 2 -> CAMSV0
+ * (docs/hardware/CAMERA.md "First frames").
+ */
 &i2c2 {
 	clock-frequency = <400000>;
 	mediatek,ch-offset = <0x100>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c2_pins>;
 	status = "okay";
+
+	ov8856: camera-sensor@36 {
+		compatible = "ovti,ov8856";
+		reg = <0x36>;
+		clocks = <&topckgen CLK_TOP_CAMTG2>;
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG2>;
+		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL_192M_D8>;
+		clock-names = "xvclk";
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+		avdd-supply = <&vcama>;
+		dvdd-supply = <&vcamd>;
+		reset-gpios = <&pio 119 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam0_mclk_on>;
+		status = "okay";
+
+		port {
+			ov8856_out: endpoint {
+				remote-endpoint = <&seninf_csi1_in>;
+				data-lanes = <1 2>;
+				/*
+				 * 24 MHz XVCLK lane config of the (patched)
+				 * ov8856 driver needs 645 + 360 MHz; 720 MHz
+				 * keeps the unpatched 19.2 MHz tables probeable.
+				 */
+				link-frequencies = /bits/ 64 <645000000 360000000 720000000>;
+			};
+		};
+	};
 };
 
 /*
@@ -900,9 +978,31 @@
 };
 
 /*
- * M2 camera bring-up test-model nodes (SoC SENINF + CAMSV0 + MIPI RX ANA/CDPHY).
- * Two power domains are listed on purpose so genpd does not power CAM on at
- * probe; the modules attach "cam" explicitly via debugfs power=1.
+ * Real camera pipeline: mt6785-cam drivers (SENINF CSI-2 receiver +
+ * CAMSV0 raw capture).  The M2 experiment nodes below are kept but
+ * disabled: they map the same SENINF/CAMSV0 register windows.
+ */
+&seninf {
+	status = "okay";
+
+	ports {
+		port@1 {
+			endpoint {
+				remote-endpoint = <&ov8856_out>;
+			};
+		};
+	};
+};
+
+&camsv0 {
+	status = "okay";
+};
+
+/*
+ * M2 camera bring-up test-model nodes (SoC SENINF + CAMSV0 + MIPI RX
+ * ANA/CDPHY).  Disabled now that the real mt6785-cam drivers own the
+ * same register windows and clocks; keep the nodes for the experiment
+ * modules' documentation value.
  */
 &{/soc} {
 	seninf_tm: seninf-tm@1a040000 {
@@ -920,6 +1020,7 @@
 			 <&topckgen CLK_TOP_SENINF2>;
 		clock-names = "cam-main", "cam-gals", "cam-tg", "cam-seninf",
 			      "top-seninf0", "top-seninf1", "top-seninf2";
+		status = "disabled";
 	};
 
 	camsv_tm: camsv-tm@1a050000 {
@@ -949,6 +1050,7 @@
 			      "top-seninf0", "top-seninf1", "top-seninf2",
 			      "mipic0", "mipic1";
 		mediatek,larb = <&larb6>;
+		status = "disabled";
 	};
 };
 
