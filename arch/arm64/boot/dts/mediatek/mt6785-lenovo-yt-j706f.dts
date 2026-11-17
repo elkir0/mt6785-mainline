@@ -367,7 +367,7 @@
 
 		port {
 			s5k4h7_out: endpoint {
-				remote-endpoint = <&seninf_csi0_in>;
+				remote-endpoint = <&seninf_csi2_in>;
 				data-lanes = <1 2 3 4>;
 				link-frequencies = /bits/ 64 <700000000>;
 			};
@@ -1023,8 +1023,8 @@
 	status = "okay";
 
 	ports {
-		/* cam1 S5K4H7: here CSI port 0; see the i2c4 note to move it. */
-		port@0 {
+		/* cam1 S5K4H7: trying CSI port 2 (port 0 carried no packets). */
+		port@2 {
 			endpoint {
 				remote-endpoint = <&s5k4h7_out>;
 			};
