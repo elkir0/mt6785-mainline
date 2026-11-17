@@ -329,13 +329,50 @@
 	};
 };
 
-/* Camera I2C bus 4 (stock: i2c4 @ 0x11011000, 400 kHz) */
+/*
+ * Camera I2C bus 4 (stock: i2c4 @ 0x11011000, 400 kHz).  cam1 is the
+ * Samsung S5K4H7 (0x2d, chip ID 0x487b; docs/research/camera/
+ * T7-S5K4H7.md), 24 MHz MCLK on GPIO120 (CMMCLK2 = CLK_TOP_CAMTG3),
+ * reset GPIO124, 4 data lanes, 700 Mbps/lane RAW10, sharing the
+ * GPIO-switched vcama/vcamd rails with cam0 through the regulator
+ * framework (reference counting, not exclusive).
+ *
+ * Its MIPI CSI port is NOT yet known: wired here to seninf CSI port 0
+ * (SENINF0).  If the port search below says port 2 instead, move the
+ * endpoint: change `remote-endpoint = <&seninf_csi0_in>` to
+ * <&seninf_csi2_in> in s5k4h7_out, and point seninf port@0's endpoint
+ * at nothing (delete its remote-endpoint line) while port@2 gains
+ * remote-endpoint = <&s5k4h7_out>.  One line each side.
+ */
 &i2c4 {
 	clock-frequency = <400000>;
 	mediatek,ch-offset = <0x100>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c4_pins>;
 	status = "okay";
+
+	s5k4h7: camera-sensor@2d {
+		compatible = "samsung,s5k4h7";
+		reg = <0x2d>;
+		clocks = <&topckgen CLK_TOP_CAMTG3>;
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG3>;
+		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL_192M_D8>;
+		avdd-supply = <&vcama>;
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+		dvdd-supply = <&vcamd>;
+		reset-gpios = <&pio 124 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam1_mclk_on>;
+		status = "okay";
+
+		port {
+			s5k4h7_out: endpoint {
+				remote-endpoint = <&seninf_csi0_in>;
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <700000000>;
+			};
+		};
+	};
 };
 
 /*
@@ -986,6 +1023,12 @@
 	status = "okay";
 
 	ports {
+		/* cam1 S5K4H7: here CSI port 0; see the i2c4 note to move it. */
+		port@0 {
+			endpoint {
+				remote-endpoint = <&s5k4h7_out>;
+			};
+		};
 		port@1 {
 			endpoint {
 				remote-endpoint = <&ov8856_out>;

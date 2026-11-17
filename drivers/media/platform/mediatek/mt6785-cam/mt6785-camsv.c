@@ -18,8 +18,16 @@
  *
  * The register sequence below is the one validated on the Lenovo Yoga
  * Tab 11 by tools/camera/ov-cap.py (setup_camsv0() with --layout le10)
- * and the begonia bring-up (src/begonia-ftp/camera/NOTES.md), with FBC
- * re-armed per frame (FBC_EN then RCNT_INC, not RCNT_INC alone).
+ * and the begonia bring-up (src/begonia-ftp/camera/NOTES.md), except
+ * the FBC: its CTL1 low field is a compare value against the count of
+ * frames written, kept ahead of that count at every frame end so the
+ * DMA writes every frame (measured on the tablet, see fbc_margin).
+ *
+ * Frames (rotate=1, default): IMGO_BASE_ADDR is programmed for the
+ * next frame at each PASS1_DON, a scratch buffer takes the frames
+ * nobody queued a buffer for, and markers at the start of the first
+ * and last lines prove that each frame landed in the buffer programmed
+ * for it.  rotate=0 keeps a bounce buffer + copy path as the fallback.
  *
  * IOMMU: the experiments run CAMSV DMA with the larb6/larb7 SMI MMU
  * bypassed and a plain CMA physical address; this driver keeps that
@@ -32,7 +40,9 @@
  * with the MT6785 register layout (single 0x1000 window, TOP +0x510,
  * TG +0x220, IMGO +0x20, FBC 0x110/0x114).
  */
+#include <linux/bitfield.h>
 #include <linux/clk.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
@@ -44,6 +54,7 @@
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/seq_file.h>
 #include <linux/spinlock.h>
 #include <media/media-device.h>
 #include <media/media-entity.h>
@@ -89,9 +100,105 @@
 
 #define CAMSV_FBC_EN			BIT(15)
 #define CAMSV_FBC_RCNT_INC		BIT(0)
-#define CAMSV_IRQ_PASS1_DON		BIT(10)
+
+/*
+ * INT_EN / INT_STATUS bits.  INT_EN reads back 0x803b04ff after a write
+ * of 0xffffffff (begonia camsv/frames/d1-run.txt), i.e. bits 0-7, 10,
+ * 16, 17, 19-21 and 31 exist; the names follow the ISP4/5 CAMSV layout
+ * and the begonia notes (bit 7 = SOF, bit 10 = PASS1_DON, bit 16 =
+ * IMGO_ERR, bit 19 set when the FBC drops frames).
+ *
+ * Bit 31 is INT_WCLR_EN: it switches INT_STATUS from read-to-clear to
+ * write-1-to-clear.  The t8f driver wrote INT_EN = 0xffffffff, which set
+ * it, while its handler only read the status: the level interrupt never
+ * dropped and the handler ran ~575000 times a second, each run seeing
+ * PASS1_DON again.  INT_EN now gets the vendor HAL value (0x001304b1,
+ * bit 31 clear) and the handler also writes the status back, which
+ * clears it in either mode.
+ */
+#define CAMSV_IRQ_VS1			BIT(0)
 #define CAMSV_IRQ_TG_ERR		BIT(4)
+#define CAMSV_IRQ_TG_GBERR		BIT(5)
+#define CAMSV_IRQ_SOF			BIT(7)
+#define CAMSV_IRQ_PASS1_DON		BIT(10)
 #define CAMSV_IRQ_IMGO_ERR		BIT(16)
+#define CAMSV_IRQ_IMGO_OVERR		BIT(17)
+#define CAMSV_IRQ_IMGO_DROP		BIT(19)
+#define CAMSV_INT_WCLR_EN		BIT(31)
+#define CAMSV_INT_EN_MASK		0x001304b1	/* vendor HAL value */
+
+/*
+ * More interrupts than this in one second is a storm (a real stream
+ * raises a handful per frame): the handler then masks INT_EN and says
+ * so, instead of eating a CPU.
+ */
+#define CAMSV_IRQ_STORM_LIMIT		10000
+
+/*
+ * FBC (measured on the tablet with /dev/mem pokes while streaming,
+ * t8g-t8i; the begonia "RCNT_INC" reading of bit 0 was wrong):
+ *
+ * - FBC_CTL2[7:0] counts the frames the DMA has written (7 bits, wraps
+ *   through 0; nothing ever decrements it); FBC_CTL2[31:24] counts the
+ *   frames dropped;
+ * - the low 6-bit field of FBC_CTL1 (NUM) is a compare value: the DMA
+ *   stops writing (drops every frame) when the written count EQUALS
+ *   NUM, and always when NUM is 0.  Any other NUM lets frames flow;
+ *   a frame in progress when NUM is set to 0 is still completed.
+ *
+ * So the FBC never needs a release: the driver keeps NUM ahead of the
+ * count.  At STREAMON and at every PASS1_DON it writes
+ * NUM = (count + fbc_margin) & 0x3f, or 1 if that is 0, which is never
+ * 0 and never equal to the count; the DMA would only stall if fbc_margin
+ * frames went by without a PASS1_DON being serviced.  Only the low
+ * field changes, FBC_EN stays set.  The bounce path holds the DMA with
+ * NUM = 0 while it copies.
+ */
+#define CAMSV_FBC_NUM_MASK		GENMASK(5, 0)
+#define CAMSV_FBC2_WCNT			GENMASK(6, 0)	/* frames written */
+#define CAMSV_FBC2_DROP			GENMASK(31, 24)	/* frames dropped */
+#define CAMSV_FBC_MARGIN_MIN		2
+#define CAMSV_FBC_MARGIN_MAX		32
+
+static unsigned int fbc_margin = 8;
+module_param(fbc_margin, uint, 0644);
+MODULE_PARM_DESC(fbc_margin,
+		 "Frames the FBC compare value is kept ahead of the written-frame count (2-32, default 8; read at STREAMON)");
+
+/*
+ * Capture path (read at STREAMON):
+ *
+ * rotate=1 (default, zero copy): at each PASS1_DON the hard interrupt
+ * programs IMGO_BASE_ADDR with the next queued vb2 buffer, in vertical
+ * blanking, so the next frame lands in it; when no buffer is queued it
+ * parks the DMA on a driver-owned scratch buffer, so the free-running
+ * DMA never writes a buffer userspace holds.  Whether the address takes
+ * effect for the very next frame is checked per frame (markers below);
+ * a buffer that did not get its frame is recycled, never delivered.
+ *
+ * rotate=0 (bounce): the DMA always writes the scratch buffer; at
+ * PASS1_DON the hard interrupt holds the FBC (compare value 0), the thread
+ * copies the frame into the next vb2 buffer, then releases the hold.
+ * Costs a copy and every other frame; kept as the fallback if the
+ * per-frame address does not work on some mode.
+ */
+static bool rotate = true;
+module_param(rotate, bool, 0644);
+MODULE_PARM_DESC(rotate,
+		 "1 (default): each frame written straight into its vb2 buffer (IMGO_BASE_ADDR per frame); 0: one bounce buffer + copy");
+
+/*
+ * Frame markers: before a buffer is programmed for a frame, the driver
+ * writes a 16-byte pattern at the start of its first line and at the
+ * start of its last line.  At the frame's PASS1_DON both must have been
+ * overwritten.  Both intact while the hardware counted a written frame
+ * (FBC_CTL2[6:0]): the frame went to another address ("missed").  Head
+ * intact, last line written: torn (the DMA started mid-frame).  Head
+ * written, last line intact: short.  These are the only per-address
+ * evidence, so they stay on in both modes (buffers without a kernel
+ * mapping are judged by FBC_CTL2[7:0] alone).
+ */
+#define CAMSV_MARK_LEN			16
 
 /* SMI LARB MMU bypass (same registers as tools/camera/larb-bypass.py). */
 #define SMI_LARB_NONSEC_CON(port)	(0x380 + 4 * (port))
@@ -108,11 +215,66 @@
  * @vb: vb2 buffer (with v4l2 buffer header)
  * @list: entry in the driver's capture queue
  * @dma_addr: physical (bypassed-MMU) address of the plane
+ * @vaddr: kernel mapping of an MMAP plane (coherent), for the markers;
+ *	NULL for imported buffers
  */
 struct mt6785_camsv_buffer {
 	struct vb2_v4l2_buffer vb;
 	struct list_head list;
 	dma_addr_t dma_addr;
+	void *vaddr;
+};
+
+/**
+ * struct mt6785_camsv_stats - IRQ path counters, reset at stream-on and
+ *	shown in the debugfs status file
+ * @irqs: hard interrupts handled
+ * @bits: per INT_STATUS bit, how many interrupts carried it
+ * @pass1: PASS1_DON events (the frame index: sequence numbers use it)
+ * @hw_frames: frames the DMA wrote (sum of FBC_CTL2[7:0] advances)
+ * @hw_idle: PASS1_DON events with FBC_CTL2[7:0] unchanged (no frame
+ *	written: FBC held or dropping)
+ * @hw_multi: PASS1_DON events where FBC_CTL2[7:0] advanced by 2 or more
+ * @drops: FBC_CTL2[31:24] advances seen at PASS1_DON
+ * @stalls: PASS1_DON events that found the written count equal to the
+ *	compare value (DMA stopped; it should stay 0)
+ * @frames: frames delivered to vb2 as DONE
+ * @missed: written frames whose target's markers were both intact
+ * @torn: frames whose head marker survived (DMA started mid-frame)
+ * @short_frames: frames whose last-line marker survived
+ * @disagree: markers overwritten while FBC_CTL2[7:0] did not advance
+ * @parked: written frames that went to the scratch buffer (rotate: no
+ *	vb2 buffer queued) or that no vb2 buffer took (bounce)
+ * @recycled: buffers put back in the queue (frame not in them)
+ * @copy_races: bounce: a frame written while a copy was running
+ * @errors: buffers returned with an error
+ * @storms: times the storm guard masked the interrupt
+ * @last_status: last INT_STATUS seen by the handler
+ * @last_fbc2: FBC_IMGO_CTL2 read at the last PASS1_DON
+ * @last_base: IMGO_BASE_ADDR programmed at the last PASS1_DON
+ */
+struct mt6785_camsv_stats {
+	unsigned int irqs;
+	unsigned int bits[32];
+	unsigned int pass1;
+	unsigned int hw_frames;
+	unsigned int hw_idle;
+	unsigned int hw_multi;
+	unsigned int drops;
+	unsigned int stalls;
+	unsigned int frames;
+	unsigned int missed;
+	unsigned int torn;
+	unsigned int short_frames;
+	unsigned int disagree;
+	unsigned int parked;
+	unsigned int recycled;
+	unsigned int copy_races;
+	unsigned int errors;
+	unsigned int storms;
+	u32 last_status;
+	u32 last_fbc2;
+	u32 last_base;
 };
 
 /**
@@ -131,9 +293,30 @@ struct mt6785_camsv_buffer {
  * @seninf_pad: remote SENINF pad, resolved when streaming starts
  * @pipeline: media pipeline handle
  * @buf_list_lock: protects @buf_list
- * @buf_list: queued capture buffers
- * @sequence: completed frame counter
+ * @buf_list: queued capture buffers not yet handed to the hardware
  * @streaming: streaming state
+ * @rotate: zero-copy mode for this stream (module parameter)
+ * @fbc_margin: FBC compare value lead for this stream (module parameter)
+ * @fbc_cur_num: FBC_CTL1 compare value last written (0: held)
+ * @cur: rotate: the vb2 buffer programmed for the frame in progress
+ *	(NULL: the scratch buffer); driver-owned until judged
+ * @scratch: scratch buffer (rotate: parking target; bounce: the DMA
+ *	target), cacheable, synced by hand
+ * @scratch_dma: its DMA (physical) address
+ * @scratch_size: its size
+ * @last_wcnt: FBC_CTL2[7:0] at the previous PASS1_DON
+ * @gated: bounce: FBC held while the thread copies a frame
+ * @gate_seq: bounce: sequence number of the frame being copied
+ * @gate_wcnt: bounce: FBC_CTL2[7:0] when the hold was set
+ * @irq: CAMSV0 interrupt, synchronized on stream-off
+ * @storm_start: start (jiffies) of the storm guard's one-second window
+ * @storm_count: interrupts in that window
+ * @stats: IRQ path counters
+ * @dbg_status: debugfs status dump dentry
+ *
+ * @cur, @last_wcnt and the gate fields belong to the interrupt handlers
+ * while streaming, and to start/stop while the interrupt is quiet
+ * (before TG enable, after synchronize_irq()).
  */
 struct mt6785_camsv {
 	struct device *dev;
@@ -157,8 +340,26 @@ struct mt6785_camsv {
 
 	spinlock_t buf_list_lock;
 	struct list_head buf_list;
-	unsigned int sequence;
 	bool streaming;
+
+	bool rotate;
+	unsigned int fbc_margin;
+	u32 fbc_cur_num;
+	struct mt6785_camsv_buffer *cur;
+	void *scratch;
+	dma_addr_t scratch_dma;
+	size_t scratch_size;
+	u8 last_wcnt;
+	bool gated;
+	unsigned int gate_seq;
+	u8 gate_wcnt;
+
+	int irq;
+	unsigned long storm_start;
+	unsigned int storm_count;
+	struct mt6785_camsv_stats stats;
+
+	struct dentry *dbg_status;
 };
 
 static inline struct mt6785_camsv *sd_to_camsv(struct v4l2_subdev *sd)
@@ -274,6 +475,47 @@ static int camsv_reset(struct mt6785_camsv *c)
  * camsv_hw_config() runs before the sensor streams, camsv_hw_enable()
  * arms the TG on an already-running receiver.
  */
+/*
+ * Keep the DMA writing: set the FBC compare value fbc_margin frames
+ * ahead of the written count @cnt, never 0 (always holds) and never
+ * equal to @cnt (holds when equal).  A count of 64..127 can never equal
+ * the 6-bit field, so any value works there too.
+ */
+static void camsv_fbc_run(struct mt6785_camsv *c, u8 cnt)
+{
+	u32 num = (cnt + c->fbc_margin) & CAMSV_FBC_NUM_MASK;
+
+	if (!num)
+		num = 1;
+	c->fbc_cur_num = num;
+	camsv_wr(c, CAMSV_FBC_IMGO_CTL1, CAMSV_FBC_EN | num);
+}
+
+/* Stop the DMA after the frame in progress (compare value 0). */
+static void camsv_fbc_hold(struct mt6785_camsv *c)
+{
+	c->fbc_cur_num = 0;
+	camsv_wr(c, CAMSV_FBC_IMGO_CTL1, CAMSV_FBC_EN);
+}
+
+static u8 camsv_fbc_count(struct mt6785_camsv *c)
+{
+	return FIELD_GET(CAMSV_FBC2_WCNT, camsv_rd(c, CAMSV_FBC_IMGO_CTL2));
+}
+
+/* IMGO DMA window. */
+static void camsv_imgo_window(struct mt6785_camsv *c, dma_addr_t dma,
+			      u32 h, u32 bpl)
+{
+	camsv_wr(c, CAMSV_IMGO_BASE_ADDR, lower_32_bits(dma));
+	camsv_wr(c, CAMSV_IMGO_XSIZE, bpl - 1);
+	camsv_wr(c, CAMSV_IMGO_YSIZE, h - 1);
+	/* Plain BPL: bit 24 packs two lines into one and halves the frame. */
+	camsv_wr(c, CAMSV_IMGO_STRIDE, bpl);
+	camsv_wr(c, CAMSV_IMGO_CON2, 0x20002);
+	camsv_wr(c, CAMSV_IMGO_CON3, 0x20002);
+}
+
 static void camsv_hw_config(struct mt6785_camsv *c, dma_addr_t dma,
 			    u32 w, u32 h, u32 bpl)
 {
@@ -286,19 +528,22 @@ static void camsv_hw_config(struct mt6785_camsv *c, dma_addr_t dma,
 
 	camsv_wr(c, CAMSV_TG_SEN_GRAB_PXL, w << 16);
 	camsv_wr(c, CAMSV_TG_SEN_GRAB_LIN, h << 16);
-	camsv_wr(c, CAMSV_IMGO_BASE_ADDR, lower_32_bits(dma));
-	camsv_wr(c, CAMSV_IMGO_XSIZE, bpl - 1);
-	camsv_wr(c, CAMSV_IMGO_YSIZE, h - 1);
-	/* Plain BPL: bit 24 packs two lines into one and halves the frame. */
-	camsv_wr(c, CAMSV_IMGO_STRIDE, bpl);
-	camsv_wr(c, CAMSV_IMGO_CON2, 0x20002);
-	camsv_wr(c, CAMSV_IMGO_CON3, 0x20002);
+	camsv_imgo_window(c, dma, h, bpl);
 	camsv_wr(c, CAMSV_FMT_SEL, 0x102);		/* measured le10 value */
 	camsv_wr(c, CAMSV_PAK, 1);			/* measured le10 value */
-	camsv_wr(c, CAMSV_FBC_IMGO_CTL1, CAMSV_FBC_EN);
+	/* FBC_EN with the compare value ahead of the written count. */
+	c->last_wcnt = camsv_fbc_count(c);
+	camsv_fbc_run(c, c->last_wcnt);
 	camsv_wr(c, CAMSV_CLK_EN, 0x8005);		/* TG | PAK | DMA */
 	camsv_wr(c, CAMSV_MODULE_EN, 0x40000015);	/* DB|IMGO|PAK|TG */
-	camsv_wr(c, CAMSV_INT_EN, 0xffffffff);
+	/*
+	 * NOT 0xffffffff: bit 31 (INT_WCLR_EN) makes the status
+	 * write-1-to-clear (the t8f interrupt storm).  Then drop whatever
+	 * is pending: the read clears it in read-clear mode, the write in
+	 * write-clear mode.
+	 */
+	camsv_wr(c, CAMSV_INT_EN, CAMSV_INT_EN_MASK);
+	camsv_wr(c, CAMSV_INT_STATUS, camsv_rd(c, CAMSV_INT_STATUS));
 	camsv_wr(c, CAMSV_DMA_EN, 1);
 }
 
@@ -345,72 +590,338 @@ static void camsv_larb_bypass(struct mt6785_camsv *c, bool enable)
 	}
 }
 
-/*
- * Frame-done handling: complete the head queued buffer, hand the next
- * one to the DMA and pulse FBC RCNT_INC to release the slot (ov-cap.py
- * line 463; begonia NOTES.md FBC semantics).  Without a queued buffer
- * the hardware drops the frame until buf_queue runs again.
- */
-static void camsv_buffer_done(struct mt6785_camsv *c)
+static const u8 camsv_mark[CAMSV_MARK_LEN] = {
+	0x4d, 0x54, 0x36, 0x37, 0x38, 0x35, 0xc3, 0x5a,
+	0xa5, 0x3c, 0x0f, 0xf0, 0x96, 0x69, 0xe1, 0x1e,
+};
+
+/* Offset of the second marker: the start of the last line. */
+static size_t camsv_mark_tail(struct mt6785_camsv *c)
 {
-	struct mt6785_camsv_buffer *done, *next;
+	return (size_t)(c->format.height - 1) * c->format.bytesperline;
+}
+
+/* Scratch buffer cache maintenance for the marker areas. */
+static void camsv_scratch_sync(struct mt6785_camsv *c, bool for_device)
+{
+	size_t tail = camsv_mark_tail(c);
+
+	if (for_device) {
+		dma_sync_single_range_for_device(c->dev, c->scratch_dma, 0,
+						 CAMSV_MARK_LEN,
+						 DMA_BIDIRECTIONAL);
+		dma_sync_single_range_for_device(c->dev, c->scratch_dma, tail,
+						 CAMSV_MARK_LEN,
+						 DMA_BIDIRECTIONAL);
+	} else {
+		dma_sync_single_range_for_cpu(c->dev, c->scratch_dma, 0,
+					      CAMSV_MARK_LEN,
+					      DMA_BIDIRECTIONAL);
+		dma_sync_single_range_for_cpu(c->dev, c->scratch_dma, tail,
+					      CAMSV_MARK_LEN,
+					      DMA_BIDIRECTIONAL);
+	}
+}
+
+/*
+ * Write the markers into @va.  vb2 MMAP buffers are coherent (no
+ * maintenance); the scratch buffer is cacheable (@scratch: clean them
+ * to memory).  The writel() of the following IMGO_BASE_ADDR / FBC write
+ * orders these stores before the DMA is pointed at the buffer.
+ */
+static void camsv_mark_set(struct mt6785_camsv *c, void *va, bool scratch)
+{
+	memcpy(va, camsv_mark, CAMSV_MARK_LEN);
+	memcpy(va + camsv_mark_tail(c), camsv_mark, CAMSV_MARK_LEN);
+	if (scratch)
+		camsv_scratch_sync(c, true);
+}
+
+enum camsv_frame_state {
+	CAMSV_FRAME_WRITTEN,
+	CAMSV_FRAME_TORN,
+	CAMSV_FRAME_SHORT,
+	CAMSV_FRAME_UNTOUCHED,
+};
+
+/* Which markers of @va did the DMA overwrite? */
+static enum camsv_frame_state camsv_mark_state(struct mt6785_camsv *c,
+					       void *va, bool scratch)
+{
+	bool head, tail;
+
+	if (scratch)
+		camsv_scratch_sync(c, false);
+	head = memcmp(va, camsv_mark, CAMSV_MARK_LEN);
+	tail = memcmp(va + camsv_mark_tail(c), camsv_mark, CAMSV_MARK_LEN);
+
+	if (head && tail)
+		return CAMSV_FRAME_WRITTEN;
+	if (tail)
+		return CAMSV_FRAME_TORN;
+	if (head)
+		return CAMSV_FRAME_SHORT;
+	return CAMSV_FRAME_UNTOUCHED;
+}
+
+static void camsv_complete(struct mt6785_camsv *c,
+			   struct mt6785_camsv_buffer *buf, unsigned int seq)
+{
+	buf->vb.sequence = seq;
+	buf->vb.vb2_buf.timestamp = ktime_get_ns();
+	vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+	c->stats.frames++;
+}
+
+/* Put a buffer that did not get its frame back at the queue head. */
+static void camsv_recycle(struct mt6785_camsv *c,
+			  struct mt6785_camsv_buffer *buf)
+{
 	unsigned long flags;
 
 	spin_lock_irqsave(&c->buf_list_lock, flags);
-	done = list_first_entry_or_null(&c->buf_list,
-					struct mt6785_camsv_buffer, list);
-	if (done)
-		list_del(&done->list);
-	next = list_first_entry_or_null(&c->buf_list,
-					struct mt6785_camsv_buffer, list);
+	list_add(&buf->list, &c->buf_list);
+	spin_unlock_irqrestore(&c->buf_list_lock, flags);
+	c->stats.recycled++;
+}
+
+static struct mt6785_camsv_buffer *camsv_pop(struct mt6785_camsv *c)
+{
+	struct mt6785_camsv_buffer *buf;
+	unsigned long flags;
+
+	spin_lock_irqsave(&c->buf_list_lock, flags);
+	buf = list_first_entry_or_null(&c->buf_list,
+				       struct mt6785_camsv_buffer, list);
+	if (buf)
+		list_del(&buf->list);
 	spin_unlock_irqrestore(&c->buf_list_lock, flags);
 
+	return buf;
+}
+
+/*
+ * Rotate mode, hard interrupt, frame @seq just ended (@wrote: the FBC
+ * counted a written frame).  First point the DMA at the next frame's
+ * buffer (we are in vertical blanking: the address must be in place
+ * before the next frame starts), then judge the buffer that was
+ * programmed for the frame that ended.
+ */
+static void camsv_rotate_frame_end(struct mt6785_camsv *c, unsigned int seq,
+				   bool wrote, u8 wcnt)
+{
+	struct mt6785_camsv_buffer *done = c->cur, *next;
+	enum camsv_frame_state st;
+	dma_addr_t dma;
+
+	next = camsv_pop(c);
+	if (next) {
+		if (next->vaddr)
+			camsv_mark_set(c, next->vaddr, false);
+		dma = next->dma_addr;
+	} else {
+		dma = c->scratch_dma;		/* park: no buffer queued */
+	}
+	camsv_wr(c, CAMSV_IMGO_BASE_ADDR, lower_32_bits(dma));
+	c->stats.last_base = lower_32_bits(dma);
+	c->cur = next;
+	/* Keep the FBC compare value ahead of the written count. */
+	camsv_fbc_run(c, wcnt);
+
 	if (!done) {
-		if (next)
-			camsv_wr(c, CAMSV_IMGO_BASE_ADDR,
-				 lower_32_bits(next->dma_addr));
+		if (wrote)
+			c->stats.parked++;
 		return;
 	}
 
-	c->sequence++;
-	done->vb.sequence = c->sequence;
-	done->vb.vb2_buf.timestamp = ktime_get_ns();
-	vb2_buffer_done(&done->vb.vb2_buf, VB2_BUF_STATE_DONE);
+	if (!done->vaddr) {
+		/* Imported buffer, no markers: trust the FBC counter. */
+		if (wrote)
+			camsv_complete(c, done, seq);
+		else
+			camsv_recycle(c, done);
+		return;
+	}
 
-	if (next)
-		camsv_wr(c, CAMSV_IMGO_BASE_ADDR,
-			 lower_32_bits(next->dma_addr));
-
-	/*
-	 * Re-arm FBC for the next frame.  Measured on this tablet
-	 * (ov-cap.py arm_one_frame()): the full FBC_EN -> RCNT_INC
-	 * sequence, not RCNT_INC alone — writing RCNT_INC on a running
-	 * FBC does not latch another frame and the frame counter stalls.
-	 */
-	camsv_wr(c, CAMSV_FBC_IMGO_CTL1, CAMSV_FBC_EN);
-	camsv_wr(c, CAMSV_FBC_IMGO_CTL1, CAMSV_FBC_EN | CAMSV_FBC_RCNT_INC);
+	st = camsv_mark_state(c, done->vaddr, false);
+	switch (st) {
+	case CAMSV_FRAME_WRITTEN:
+		if (!wrote)
+			c->stats.disagree++;
+		camsv_complete(c, done, seq);
+		return;
+	case CAMSV_FRAME_TORN:
+		c->stats.torn++;
+		break;
+	case CAMSV_FRAME_SHORT:
+		c->stats.short_frames++;
+		break;
+	case CAMSV_FRAME_UNTOUCHED:
+		if (wrote)
+			c->stats.missed++;	/* frame went elsewhere */
+		break;
+	}
+	camsv_recycle(c, done);
 }
 
+/*
+ * Bounce mode, hard interrupt: a frame was written into the scratch
+ * buffer.  Hold the FBC (compare value 0: the DMA stops after the frame
+ * in progress, i.e. before the next one, since we are in vertical
+ * blanking) and let the thread copy it.  Returns true to wake it.
+ */
+static bool camsv_bounce_frame_end(struct mt6785_camsv *c, unsigned int seq,
+				   bool wrote, u8 wcnt)
+{
+	if (c->gated) {
+		if (wrote)
+			c->stats.copy_races++;
+		return false;
+	}
+	if (!wrote) {
+		camsv_fbc_run(c, wcnt);		/* restart a stalled FBC */
+		return false;
+	}
+
+	camsv_fbc_hold(c);
+	c->gated = true;
+	c->gate_seq = seq;
+	c->gate_wcnt = c->last_wcnt;
+
+	return true;
+}
+
+/*
+ * Threaded half (bounce mode only): check the scratch markers, copy the
+ * frame into the next queued vb2 buffer, re-mark, release the hold.
+ * May sleep (the copy of a 10 MB frame).
+ */
+static irqreturn_t camsv_irq_thread(int irq, void *data)
+{
+	struct mt6785_camsv *c = data;
+	struct mt6785_camsv_buffer *buf;
+	u8 wcnt;
+
+	if (!READ_ONCE(c->streaming) || !READ_ONCE(c->gated))
+		return IRQ_HANDLED;
+
+	switch (camsv_mark_state(c, c->scratch, true)) {
+	case CAMSV_FRAME_WRITTEN:
+		buf = camsv_pop(c);
+		if (!buf) {
+			c->stats.parked++;
+			break;
+		}
+		if (!buf->vaddr) {
+			c->stats.errors++;
+			vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
+			break;
+		}
+		dma_sync_single_for_cpu(c->dev, c->scratch_dma,
+					c->format.sizeimage, DMA_BIDIRECTIONAL);
+		memcpy(buf->vaddr, c->scratch, c->format.sizeimage);
+		/* Another frame written during the copy: it may be mixed. */
+		wcnt = camsv_fbc_count(c);
+		if (wcnt != c->gate_wcnt) {
+			c->stats.copy_races++;
+			camsv_recycle(c, buf);
+			break;
+		}
+		camsv_complete(c, buf, c->gate_seq);
+		break;
+	case CAMSV_FRAME_TORN:
+		c->stats.torn++;
+		break;
+	case CAMSV_FRAME_SHORT:
+		c->stats.short_frames++;
+		break;
+	case CAMSV_FRAME_UNTOUCHED:
+		c->stats.missed++;
+		break;
+	}
+
+	camsv_mark_set(c, c->scratch, true);
+	WRITE_ONCE(c->gated, false);
+	camsv_fbc_run(c, camsv_fbc_count(c));
+
+	return IRQ_HANDLED;
+}
+
+/*
+ * Hard half: read and clear INT_STATUS, count, guard against a storm;
+ * at PASS1_DON read the FBC written-frame counter and run the frame end
+ * of the current mode (rotate: entirely here, bounce: wake the thread).
+ */
 static irqreturn_t camsv_irq(int irq, void *data)
 {
 	struct mt6785_camsv *c = data;
 	u32 status = camsv_rd(c, CAMSV_INT_STATUS);
+	unsigned long bits = status;
+	unsigned int bit, seq;
+	u8 wcnt, delta;
+	u32 fbc2;
 
 	if (!status)
 		return IRQ_NONE;
+
+	/* Read-clear with INT_WCLR_EN off; the write clears it otherwise. */
+	camsv_wr(c, CAMSV_INT_STATUS, status);
+
+	c->stats.irqs++;
+	c->stats.last_status = status;
+	for_each_set_bit(bit, &bits, 32)
+		c->stats.bits[bit]++;
+
+	if (time_after(jiffies, c->storm_start + HZ)) {
+		c->storm_start = jiffies;
+		c->storm_count = 0;
+	}
+	if (++c->storm_count > CAMSV_IRQ_STORM_LIMIT) {
+		camsv_wr(c, CAMSV_INT_EN, 0);
+		c->stats.storms++;
+		dev_err_ratelimited(c->dev,
+				    "interrupt storm, INT_STATUS 0x%08x does not clear: CAMSV interrupts masked until the next stream-on\n",
+				    status);
+		return IRQ_HANDLED;
+	}
 
 	if (status & CAMSV_IRQ_IMGO_ERR)
 		dev_err_ratelimited(c->dev,
 				    "IMGO DMA error (INT_STATUS 0x%08x); is the LARB MMU bypass active?\n",
 				    status);
 	if (status & CAMSV_IRQ_TG_ERR)
-		dev_dbg(c->dev, "TG error in frame (INT_STATUS 0x%08x)\n",
-			status);
+		dev_dbg_ratelimited(c->dev, "TG error in frame (INT_STATUS 0x%08x)\n",
+				    status);
 
-	if (status & CAMSV_IRQ_PASS1_DON)
-		camsv_buffer_done(c);
+	if (!(status & CAMSV_IRQ_PASS1_DON))
+		return IRQ_HANDLED;
 
-	return IRQ_HANDLED;
+	fbc2 = camsv_rd(c, CAMSV_FBC_IMGO_CTL2);
+	wcnt = FIELD_GET(CAMSV_FBC2_WCNT, fbc2);
+	delta = (wcnt - c->last_wcnt) & CAMSV_FBC2_WCNT;	/* 7-bit wrap */
+	c->last_wcnt = wcnt;
+	if (c->fbc_cur_num && wcnt == c->fbc_cur_num)
+		c->stats.stalls++;	/* the DMA had stopped */
+	c->stats.hw_frames += delta;
+	if (!delta)
+		c->stats.hw_idle++;
+	else if (delta > 1)
+		c->stats.hw_multi++;
+	if ((fbc2 ^ c->stats.last_fbc2) & CAMSV_FBC2_DROP)
+		c->stats.drops++;
+	c->stats.last_fbc2 = fbc2;
+	seq = c->stats.pass1++;
+
+	if (!READ_ONCE(c->streaming))
+		return IRQ_HANDLED;
+
+	if (c->rotate) {
+		camsv_rotate_frame_end(c, seq, delta, wcnt);
+		return IRQ_HANDLED;
+	}
+
+	return camsv_bounce_frame_end(c, seq, delta, wcnt) ? IRQ_WAKE_THREAD :
+							    IRQ_HANDLED;
 }
 
 /* --------------------------------------------------------------------------
@@ -449,6 +960,13 @@ static int camsv_vb2_buf_prepare(struct vb2_buffer *vb)
 	vb2_set_plane_payload(vb, 0, c->format.sizeimage);
 	buf->vb.field = V4L2_FIELD_NONE;
 	buf->dma_addr = vb2_dma_contig_plane_dma_addr(vb, 0);
+	/*
+	 * Markers need a CPU mapping the interrupt handler can use: only
+	 * MMAP planes (coherent, mapped at allocation).  Imported buffers
+	 * are judged by the FBC counter alone.
+	 */
+	buf->vaddr = vb->memory == VB2_MEMORY_MMAP ? vb2_plane_vaddr(vb, 0) :
+						     NULL;
 
 	return 0;
 }
@@ -458,23 +976,17 @@ static void camsv_vb2_buf_queue(struct vb2_buffer *vb)
 	struct mt6785_camsv *c = vb2q_to_camsv(vb->vb2_queue);
 	struct mt6785_camsv_buffer *buf = to_camsv_buffer(vb);
 	unsigned long flags;
-	bool was_empty;
-
-	spin_lock_irqsave(&c->buf_list_lock, flags);
-	was_empty = list_empty(&c->buf_list);
-	list_add_tail(&buf->list, &c->buf_list);
-	spin_unlock_irqrestore(&c->buf_list_lock, flags);
 
 	/*
-	 * If the queue ran dry while streaming (a frame was dropped in
-	 * camsv_buffer_done), point the DMA at the new buffer.
+	 * The interrupt handler takes buffers from the list at each frame
+	 * end (rotate: programs the next one; bounce: copies into it).
 	 */
-	if (c->streaming && was_empty)
-		camsv_wr(c, CAMSV_IMGO_BASE_ADDR,
-			 lower_32_bits(buf->dma_addr));
+	spin_lock_irqsave(&c->buf_list_lock, flags);
+	list_add_tail(&buf->list, &c->buf_list);
+	spin_unlock_irqrestore(&c->buf_list_lock, flags);
 }
 
-/* Return every queued buffer to vb2 (start failure / stop). */
+/* Return the in-flight and every queued buffer to vb2 (stop / failure). */
 static void camsv_return_all_buffers(struct mt6785_camsv *c,
 				     enum vb2_buffer_state state)
 {
@@ -482,6 +994,10 @@ static void camsv_return_all_buffers(struct mt6785_camsv *c,
 	unsigned long flags;
 
 	spin_lock_irqsave(&c->buf_list_lock, flags);
+	if (c->cur) {
+		vb2_buffer_done(&c->cur->vb.vb2_buf, state);
+		c->cur = NULL;
+	}
 	list_for_each_entry_safe(buf, tmp, &c->buf_list, list) {
 		list_del(&buf->list);
 		vb2_buffer_done(&buf->vb.vb2_buf, state);
@@ -489,12 +1005,22 @@ static void camsv_return_all_buffers(struct mt6785_camsv *c,
 	spin_unlock_irqrestore(&c->buf_list_lock, flags);
 }
 
+static void camsv_free_scratch(struct mt6785_camsv *c)
+{
+	if (!c->scratch)
+		return;
+
+	dma_free_noncoherent(c->dev, c->scratch_size, c->scratch,
+			     c->scratch_dma, DMA_BIDIRECTIONAL);
+	c->scratch = NULL;
+}
+
 static int camsv_vb2_start_streaming(struct vb2_queue *vq,
 				     unsigned int count)
 {
 	struct mt6785_camsv *c = vb2q_to_camsv(vq);
 	struct v4l2_subdev *seninf_sd;
-	struct mt6785_camsv_buffer *buf;
+	dma_addr_t target;
 	int ret;
 
 	if (!c->seninf_pad) {
@@ -502,15 +1028,58 @@ static int camsv_vb2_start_streaming(struct vb2_queue *vq,
 		if (!c->seninf_pad) {
 			dev_err(c->dev,
 				"no SENINF connected to sink pad 0; the media link is missing (notifier bound callback)\n");
-			return -ENOLINK;
+			ret = -ENOLINK;
+			goto err_buffers;
 		}
 	}
 
 	seninf_sd = media_entity_to_v4l2_subdev(c->seninf_pad->entity);
 
+	/* Per-stream state; the interrupt is quiet (TG off). */
+	c->rotate = rotate;
+	c->fbc_margin = clamp_val(fbc_margin, CAMSV_FBC_MARGIN_MIN,
+				  CAMSV_FBC_MARGIN_MAX);
+	c->cur = NULL;
+	c->gated = false;
+	c->storm_start = jiffies;
+	c->storm_count = 0;
+	memset(&c->stats, 0, sizeof(c->stats));
+
+	/*
+	 * Scratch buffer: the parking target (rotate) or the DMA target
+	 * (bounce).  Cacheable, below 4 GB (32-bit mask) and physically
+	 * contiguous (dma-direct + CMA, no IOMMU on this device).
+	 */
+	c->scratch_size = PAGE_ALIGN(c->format.sizeimage);
+	c->scratch = dma_alloc_noncoherent(c->dev, c->scratch_size,
+					   &c->scratch_dma, DMA_BIDIRECTIONAL,
+					   GFP_KERNEL);
+	if (!c->scratch) {
+		dev_err(c->dev, "cannot allocate a %zu-byte scratch buffer\n",
+			c->scratch_size);
+		ret = -ENOMEM;
+		goto err_buffers;
+	}
+	camsv_mark_set(c, c->scratch, true);
+
+	if (c->rotate) {
+		/* The first frame's buffer, programmed before the TG runs. */
+		c->cur = camsv_pop(c);
+		if (!c->cur) {
+			ret = -EINVAL;
+			goto err_scratch;
+		}
+		if (c->cur->vaddr)
+			camsv_mark_set(c, c->cur->vaddr, false);
+		target = c->cur->dma_addr;
+	} else {
+		target = c->scratch_dma;
+	}
+	c->stats.last_base = lower_32_bits(target);
+
 	ret = video_device_pipeline_start(&c->vdev, &c->pipeline);
 	if (ret)
-		return ret;
+		goto err_scratch;
 
 	ret = pm_runtime_resume_and_get(c->dev);
 	if (ret < 0)
@@ -526,15 +1095,13 @@ static int camsv_vb2_start_streaming(struct vb2_queue *vq,
 	 * The validated --stream-first order (ov-cap.py option and begonia
 	 * NOTES.md "where we stopped"): configure CAMSV fully (reset,
 	 * window, DMA, FBC, module enable) with the TG still off, then
-	 * start SENINF + PHY + sensor, then arm the TG.  Arming the TG
+	 * start SENINF + PHY + sensor, then start the TG.  Starting the TG
 	 * before the sensor streams was the failure mode that left IMGO
-	 * stuck in IMGO_ERR on this tablet.
+	 * stuck in IMGO_ERR on this tablet.  The FBC compare value starts
+	 * fbc_margin frames ahead of the written count (camsv_fbc_run()).
 	 */
-	buf = list_first_entry(&c->buf_list, struct mt6785_camsv_buffer, list);
-	camsv_hw_config(c, buf->dma_addr, c->format.width, c->format.height,
+	camsv_hw_config(c, target, c->format.width, c->format.height,
 			c->format.bytesperline);
-
-	c->sequence = 0;
 
 	ret = v4l2_subdev_call(seninf_sd, video, s_stream, 1);
 	if (ret) {
@@ -542,24 +1109,32 @@ static int camsv_vb2_start_streaming(struct vb2_queue *vq,
 		goto err_stop;
 	}
 
+	WRITE_ONCE(c->streaming, true);
 	camsv_hw_enable(c);
 
-	c->streaming = true;
+	dev_dbg(c->dev, "streaming %ux%u, %s, FBC count %u compare %u, first target 0x%08x\n",
+		c->format.width, c->format.height,
+		c->rotate ? "zero copy" : "bounce buffer", c->last_wcnt,
+		c->fbc_cur_num, lower_32_bits(target));
 
 	return 0;
 
 err_stop:
 	camsv_hw_stop(c);
+	synchronize_irq(c->irq);
 	camsv_larb_bypass(c, false);
 	pm_runtime_mark_last_busy(c->dev);
 	pm_runtime_put_autosuspend(c->dev);
 err_pipeline:
+	video_device_pipeline_stop(&c->vdev);
+err_scratch:
+	camsv_free_scratch(c);
+err_buffers:
 	/*
 	 * Every buffer vb2 handed us must go back before returning an
 	 * error, or vb2_start_streaming() WARNs (seen on the t8b boot).
 	 */
 	camsv_return_all_buffers(c, VB2_BUF_STATE_QUEUED);
-	video_device_pipeline_stop(&c->vdev);
 
 	return ret;
 }
@@ -574,11 +1149,15 @@ static void camsv_vb2_stop_streaming(struct vb2_queue *vq)
 		v4l2_subdev_call(seninf_sd, video, s_stream, 0);
 	}
 
-	c->streaming = false;
+	WRITE_ONCE(c->streaming, false);
 	camsv_hw_stop(c);
+	/* Neither half of the interrupt handler may still be running. */
+	synchronize_irq(c->irq);
 	camsv_larb_bypass(c, false);
 
 	camsv_return_all_buffers(c, VB2_BUF_STATE_ERROR);
+	camsv_free_scratch(c);
+	c->gated = false;
 
 	video_device_pipeline_stop(&c->vdev);
 
@@ -767,12 +1346,34 @@ static int camsv_s_fmt_ioctl(struct file *file, void *fh,
 			     struct v4l2_format *f)
 {
 	struct mt6785_camsv *c = vdev_to_camsv(video_devdata(file));
+	const struct mt6785_camsv_format *fmt;
+	struct v4l2_subdev_state *state;
+	struct v4l2_mbus_framefmt *padfmt;
 
 	if (vb2_is_busy(&c->vbq))
 		return -EBUSY;
 
 	camsv_try_fmt(c, &f->fmt.pix);
 	c->format = f->fmt.pix;
+
+	/*
+	 * Keep the subdev pads in step with the node: link validation
+	 * between the seninf source and this sink compares bus codes, and
+	 * userspace picks the Bayer order through the fourcc.  Without
+	 * this, selecting a pgAA node format leaves pad 0 at BGGR and
+	 * STREAMON fails with EPIPE.
+	 */
+	fmt = camsv_format_by_fourcc(c->format.pixelformat);
+	if (WARN_ON(!fmt))
+		return -EINVAL;
+
+	state = v4l2_subdev_lock_and_get_active_state(&c->sd);
+	padfmt = v4l2_subdev_state_get_format(state, 0, 0);
+	padfmt->width = c->format.width;
+	padfmt->height = c->format.height;
+	padfmt->code = fmt->code;
+	*v4l2_subdev_state_get_format(state, 1, 0) = *padfmt;
+	v4l2_subdev_unlock_state(state);
 
 	return 0;
 }
@@ -977,6 +1578,86 @@ static const struct dev_pm_ops camsv_pm_ops = {
 				pm_runtime_force_resume)
 };
 
+/* --------------------------------------------------------------------------
+ * Debugfs: the CAMSV side of the status dump (mirrors ov-cap.py's
+ * "CAMSV0:" line).  The SENINF side lives in the seninf driver; both
+ * are one-line reads usable without /dev/mem.
+ */
+
+static int camsv_status_show(struct seq_file *m, void *v)
+{
+	struct mt6785_camsv *c = m->private;
+	struct mt6785_camsv_stats st = c->stats;	/* racy snapshot */
+	u32 int_en, frmsize, fbc1, fbc2, base;
+	unsigned int bit;
+	int ret;
+
+	/* Registers are only readable with the CAM domain and clocks on. */
+	ret = pm_runtime_resume_and_get(c->dev);
+	if (ret < 0) {
+		seq_printf(m, "power domain unavailable: %d\n", ret);
+		return 0;
+	}
+
+	/* Not INT_STATUS: reading it clears it under the handler's feet. */
+	int_en = camsv_rd(c, CAMSV_INT_EN);
+	frmsize = camsv_rd(c, CAMSV_TG_FRMSIZE);
+	fbc1 = camsv_rd(c, CAMSV_FBC_IMGO_CTL1);
+	fbc2 = camsv_rd(c, CAMSV_FBC_IMGO_CTL2);
+	base = camsv_rd(c, CAMSV_IMGO_BASE_ADDR);
+
+	pm_runtime_mark_last_busy(c->dev);
+	pm_runtime_put_autosuspend(c->dev);
+
+	seq_printf(m, "mode        %s, FBC margin %u, streaming %d\n",
+		   c->rotate ? "zero copy (IMGO_BASE_ADDR per frame)" :
+			       "bounce buffer + copy",
+		   c->fbc_margin, READ_ONCE(c->streaming));
+	seq_printf(m, "INT_EN      0x%08x  (write-clear bit31 %d; 0 = masked)\n",
+		   int_en, !!(int_en & CAMSV_INT_WCLR_EN));
+	seq_printf(m, "TG_FRMSIZE  0x%08x  (%u px x %u lines)\n",
+		   frmsize, frmsize >> 16, frmsize & 0xffff);
+	seq_printf(m, "FBC_CTL1    0x%08x  (compare %lu)  FBC_CTL2 0x%08x  (written count %lu, [23:16] %lu, dropped %lu)%s\n",
+		   fbc1, FIELD_GET(CAMSV_FBC_NUM_MASK, fbc1), fbc2,
+		   FIELD_GET(CAMSV_FBC2_WCNT, fbc2),
+		   FIELD_GET(GENMASK(23, 16), fbc2),
+		   FIELD_GET(CAMSV_FBC2_DROP, fbc2),
+		   (fbc1 & CAMSV_FBC_EN) &&
+		   (!FIELD_GET(CAMSV_FBC_NUM_MASK, fbc1) ||
+		    FIELD_GET(CAMSV_FBC_NUM_MASK, fbc1) ==
+		    FIELD_GET(CAMSV_FBC2_WCNT, fbc2)) ? "  STOPPED" : "");
+	seq_printf(m, "IMGO_BASE   0x%08x  (last programmed 0x%08x, scratch 0x%08x)\n",
+		   base, st.last_base, lower_32_bits(c->scratch_dma));
+	seq_printf(m, "pass1_don %u  hw_written %u  hw_idle %u  hw_multi %u  drops %u  stalls %u\n",
+		   st.pass1, st.hw_frames, st.hw_idle, st.hw_multi, st.drops,
+		   st.stalls);
+	seq_printf(m, "delivered %u  missed %u  torn %u  short %u  disagree %u  parked %u  recycled %u  copy_races %u  errors %u\n",
+		   st.frames, st.missed, st.torn, st.short_frames, st.disagree,
+		   st.parked, st.recycled, st.copy_races, st.errors);
+	seq_printf(m, "irqs %u  storms %u  last INT_STATUS 0x%08x  FBC_CTL2 at last PASS1_DON 0x%08x\n",
+		   st.irqs, st.storms, st.last_status, st.last_fbc2);
+	seq_puts(m, "INT_STATUS bit counts:");
+	for (bit = 0; bit < 32; bit++)
+		if (st.bits[bit])
+			seq_printf(m, " b%u=%u", bit, st.bits[bit]);
+	seq_puts(m, "\n");
+
+	return 0;
+}
+
+static int camsv_status_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, camsv_status_show, inode->i_private);
+}
+
+static const struct file_operations camsv_status_fops = {
+	.owner = THIS_MODULE,
+	.open = camsv_status_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 static int camsv_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1038,8 +1719,16 @@ static int camsv_probe(struct platform_device *pdev)
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
 		return irq;
+	c->irq = irq;
 
-	ret = devm_request_irq(dev, irq, camsv_irq, 0, dev_name(dev), c);
+	/*
+	 * Hard half clears and counts, the thread checks, copies and arms
+	 * (it may sleep).  Not IRQF_ONESHOT: the hard half clears the
+	 * source, and frame ends must keep being counted while the thread
+	 * copies a large frame.
+	 */
+	ret = devm_request_threaded_irq(dev, irq, camsv_irq, camsv_irq_thread,
+					0, dev_name(dev), c);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to request irq %d\n", irq);
 
@@ -1072,6 +1761,18 @@ static int camsv_probe(struct platform_device *pdev)
 	ret = media_entity_pads_init(&c->sd.entity, 2, c->pads);
 	if (ret)
 		return ret;
+
+	/*
+	 * The active state must exist before the subdev can be bound: the
+	 * SENINF notifier may bind it (and register the subdev nodes)
+	 * from inside v4l2_async_register_subdev() below.
+	 */
+	ret = v4l2_subdev_init_finalize(&c->sd);
+	if (ret) {
+		dev_err_probe(dev, ret, "failed to init subdev state\n");
+		goto err_pads;
+	}
+
 	/*
 	 * Async registration: when the SENINF notifier binds this subdev,
 	 * .registered creates the video node under the pipeline's
@@ -1080,13 +1781,7 @@ static int camsv_probe(struct platform_device *pdev)
 	ret = v4l2_async_register_subdev(&c->sd);
 	if (ret) {
 		dev_err_probe(dev, ret, "failed to register subdev\n");
-		goto err_pads;
-	}
-
-	ret = v4l2_subdev_init_finalize(&c->sd);
-	if (ret) {
-		dev_err_probe(dev, ret, "failed to init subdev state\n");
-		goto err_async;
+		goto err_state;
 	}
 
 	pm_runtime_set_autosuspend_delay(dev, MT6785_CAMSV_AUTOSUSPEND_MS);
@@ -1094,12 +1789,16 @@ static int camsv_probe(struct platform_device *pdev)
 	devm_pm_runtime_enable(dev);
 	pm_runtime_set_suspended(dev);
 
+	/* Status dump (see camsv_status_show); registers need the CAM domain. */
+	c->dbg_status = debugfs_create_file("mt6785-camsv-status", 0444,
+					    NULL, c, &camsv_status_fops);
+
 	dev_dbg(dev, "MT6785 CAMSV0 probe complete (video node on bind)\n");
 
 	return 0;
 
-err_async:
-	v4l2_async_unregister_subdev(&c->sd);
+err_state:
+	v4l2_subdev_cleanup(&c->sd);
 err_pads:
 	media_entity_cleanup(&c->sd.entity);
 	return ret;
@@ -1108,6 +1807,8 @@ err_pads:
 static void camsv_remove(struct platform_device *pdev)
 {
 	struct mt6785_camsv *c = dev_get_drvdata(&pdev->dev);
+
+	debugfs_remove(c->dbg_status);
 
 	v4l2_async_unregister_subdev(&c->sd);	/* runs .unregistered */
 	v4l2_subdev_cleanup(&c->sd);

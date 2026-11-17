@@ -8,13 +8,17 @@
  * CAMSV0.  This driver programs the register sequence validated on the
  * Lenovo Yoga Tab 11 by the experiment modules (drivers/staging/yt11-cam)
  * and tools/camera/ov-cap.py: every write below mirrors a line of
- * ov-cap.py's setup_phy_seninf(), in the same order, for the CSI port,
- * lane count, HS-settle and frame size taken from the DT endpoint and the
- * active subdev format.
+ * ov-cap.py's setup_phy_seninf(), in the same order, for the CSI port
+ * and lane count taken from the DT endpoints and the selected sensor.
  *
  * Media graph:
  *   sensor -> seninf sink pad N (= CSI port N) -> seninf source pad 3
  *           -> camsv0 subdev -> /dev/videoN
+ *
+ * The seninf is an input selector: every bound sensor is linked to the
+ * sink pad of its CSI port, at most one of those links is enabled (the
+ * OV8856 on port 1 by default, switched with `media-ctl -l`), only that
+ * one is validated and streamed, and the source pad mirrors its format.
  *
  * The source pad always routes through SENINF mux 2 / CAM_MUX 2 because
  * CAMSV0 is hardwired to cam_mux 2 on this SoC.
@@ -25,6 +29,7 @@
  */
 #include <linux/bitfield.h>
 #include <linux/clk.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/io.h>
@@ -34,6 +39,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/property.h>
+#include <linux/seq_file.h>
 #include <media/media-device.h>
 #include <media/media-entity.h>
 #include <media/v4l2-async.h>
@@ -70,15 +76,46 @@
  */
 static const unsigned int csi_port_to_seninf[MT6785_CAM_CSI_PORTS] = { 0, 2, 4 };
 
-/* DPHY HS-settle, from ov-cap.py --settle default (validated value). */
-#define MT6785_SENINF_SETTLE		15
+/*
+ * The CSI port enabled at boot: 1, where the OV8856 was validated on
+ * hardware.  Every other sensor link starts disabled; userspace selects
+ * the active sensor with `media-ctl -l`.
+ */
+#define MT6785_SENINF_DEFAULT_PORT	1
 
-static unsigned int hs_settle = MT6785_SENINF_SETTLE;
+/*
+ * DPHY HS-settle.  The validated value is 15 (ov-cap.py --settle),
+ * measured with the OV8856 at 720 Mbps/lane.  The ISP7 phy_2_0
+ * reference leaves the per-platform value in SoC data
+ * (core->dphy_settle_delay_dt) without a formula, and the begonia sweep
+ * (ov8856-mipi/dbg/settle.py) found a wide working window.  The D-PHY
+ * window [85ns + 6*UI, 145ns + 10*UI] is dominated by its fixed part:
+ * its centre moves by less than 5 % between 720 and 1400 Mbps/lane, so
+ * the validated value is kept for every link frequency (a 1/f scaling
+ * would put 1290 Mbps/lane at 8, below the window).  The module
+ * parameter is there for a sweep on hardware.
+ */
+#define SETTLE_VALIDATED		15
+
+static unsigned int hs_settle = SETTLE_VALIDATED;
 module_param(hs_settle, uint, 0644);
 MODULE_PARM_DESC(hs_settle,
-		 "DPHY HS-settle value (bits [15:8] of DPHY +0x20..0x2c), default 15");
+		 "DPHY HS-settle (bits [15:8] of DPHY +0x20..0x2c), default 15 (validated at 720 Mbps/lane)");
 
 #define MT6785_SENINF_AUTOSUSPEND_MS	2000
+
+/**
+ * struct mt6785_seninf_port - per-CSI-port bound sensor
+ * @sd: bound sensor subdev (NULL while unbound)
+ * @pad: the sensor's source pad wired to this port (the link from it
+ *	may be enabled or not: the seninf is a selector)
+ * @lanes: data lane count from the sensor's DT endpoint
+ */
+struct mt6785_seninf_port {
+	struct v4l2_subdev *sd;
+	struct media_pad *pad;
+	unsigned int lanes;
+};
 
 /**
  * struct mt6785_seninf - SENINF device state
@@ -91,14 +128,13 @@ MODULE_PARM_DESC(hs_settle,
  * @v4l2_dev: V4L2 device owning the pipeline
  * @sd: this driver's V4L2 subdev
  * @pads: sink pads 0..2 (CSI ports) + source pad 3
- * @notifier: async notifier waiting for the sensor subdev
- * @csi_port: CSI port (0..2) of the bound sensor, or -1 when none
- * @seninf_id: SENINF instance (0..4) the port maps to
- * @lanes: number of CSI-2 data lanes of the bound sensor
- * @settle: DPHY HS-settle value (module parameter override or default)
- * @source_sd: bound sensor subdev
- * @source_pad: sensor's source pad feeding our sink
+ * @notifier: async notifier waiting for the sensor subdevs
+ * @ports: per-CSI-port bound sensors
+ * @active_port: port whose sensor is streaming (-1 none); the routing
+ *	(TOP mux, CAM mux) follows it
  * @streaming: s_stream state of this subdev
+ * @dbg_last_port: port that streamed last, for the status dump
+ * @dbg_status: debugfs status dump dentry
  */
 struct mt6785_seninf {
 	struct device *dev;
@@ -114,15 +150,13 @@ struct mt6785_seninf {
 	struct media_pad pads[MT6785_CAM_NUM_PADS];
 	struct v4l2_async_notifier notifier;
 
-	int csi_port;
-	unsigned int seninf_id;
-	unsigned int lanes;
-	unsigned int settle;
-
-	struct v4l2_subdev *source_sd;
-	struct media_pad *source_pad;
+	struct mt6785_seninf_port ports[MT6785_CAM_CSI_PORTS];
+	int active_port;
 
 	bool streaming;
+
+	int dbg_last_port;
+	struct dentry *dbg_status;
 };
 
 static struct mt6785_seninf *sd_to_seninf(struct v4l2_subdev *sd)
@@ -231,14 +265,15 @@ static void seninf_phy_init(struct mt6785_seninf *s, int port)
  * ov-cap.py dphy_init(), lines 268-271: per-lane HS-settle (bits [15:8]),
  * [23:16] = 0x20 and bit 29 on DPHY +0x20..+0x2c.
  */
-static void seninf_dphy_init(struct mt6785_seninf *s, int port)
+static void seninf_dphy_init(struct mt6785_seninf *s, int port,
+			     unsigned int settle)
 {
 	unsigned int dphy = ANA_DPHY(port);
 	int off;
 
 	for (off = 0x20; off <= 0x2c; off += 4) {
 		ana_field(s, dphy + off, FIELD_MASK(23, 16), FIELD_VAL(23, 16, 0x20));
-		ana_field(s, dphy + off, FIELD_MASK(15, 8), FIELD_VAL(15, 8, s->settle));
+		ana_field(s, dphy + off, FIELD_MASK(15, 8), FIELD_VAL(15, 8, settle));
 		ana_rmw(s, dphy + off, 0, 1 << 29);
 	}
 }
@@ -247,10 +282,11 @@ static void seninf_dphy_init(struct mt6785_seninf *s, int port)
  * ov-cap.py lines 277-284: CSI2 receiver of the SENINF instance.
  * CSI2_EN = (1 << lanes) - 1, IRQ enable and packet counters on.
  */
-static void seninf_csi2_setup(struct mt6785_seninf *s)
+static void seninf_csi2_setup(struct mt6785_seninf *s,
+			      unsigned int seninf_id, unsigned int lanes)
 {
-	unsigned int csi2 = SENINF_CSI2(s->seninf_id);
-	u32 csi_en = (1 << s->lanes) - 1;
+	unsigned int csi2 = SENINF_CSI2(seninf_id);
+	u32 csi_en = (1 << lanes) - 1;
 
 	seninf_rmw(s, csi2 + 0x10, 0, 0x100);		/* RESYNC_MERGE_CTRL */
 	seninf_rmw(s, csi2 + 0x8, 0x7ff, 0);		/* HDR_MODE */
@@ -330,9 +366,10 @@ static int seninf_phy_power_on(struct mt6785_seninf *s, int port)
  * ov-cap.py lines 318-336: SENINF enable, TOP crossbar (mux 2 ->
  * CAMSV0), MUX control and CAM_MUX enables.
  */
-static void seninf_routing_setup(struct mt6785_seninf *s)
+static void seninf_routing_setup(struct mt6785_seninf *s,
+				 unsigned int seninf_id)
 {
-	unsigned int ctrl = SENINF_CTRL(s->seninf_id);
+	unsigned int ctrl = SENINF_CTRL(seninf_id);
 	unsigned int mux = SENINF_MUX(MT6785_CAM_MUX);
 	u32 top_reg = SENINF_TOP_MUX_CTRL(MT6785_CAM_MUX);
 	u32 top_shift = SENINF_TOP_MUX_SHIFT(MT6785_CAM_MUX);
@@ -342,7 +379,7 @@ static void seninf_routing_setup(struct mt6785_seninf *s)
 	seninf_rmw(s, ctrl + 0x0, 0, 1);
 
 	/* TOP_MUX_CTRL nibble: route this SENINF into mux 2 */
-	seninf_rmw(s, top_reg, 0xf << top_shift, s->seninf_id << top_shift);
+	seninf_rmw(s, top_reg, 0xf << top_shift, seninf_id << top_shift);
 
 	/* mux2: MIPI source (8), 1-pixel mode, polarities 0, reset, enable */
 	seninf_rmw(s, mux + 0x4, 0x30f, 0x8);
@@ -364,53 +401,73 @@ static void seninf_csi_mipi(struct mt6785_seninf *s, int port)
 }
 
 /*
+ * Link frequency of the sensor wired to @port (its LINK_FREQ integer
+ * menu control, through the core helper), for the log and the status
+ * dump only; 0 when unknown.
+ */
+static u64 seninf_link_freq(struct mt6785_seninf *s, int port)
+{
+	struct mt6785_seninf_port *p = &s->ports[port];
+	s64 freq;
+
+	if (!p->pad || !p->lanes)
+		return 0;
+
+	freq = v4l2_get_link_freq(p->pad, MT6785_CAM_BPP, 2 * p->lanes);
+
+	return freq > 0 ? freq : 0;
+}
+
+/*
  * Full stream-on sequence (same order as ov-cap.py setup_phy_seninf):
  * phyA_init -> dphy_init -> setSeninfCsiMipi -> csi2_setting ->
  * TOP_PHY_CTRL -> phyA_setting -> dphy_setting (inside phy_setting) ->
  * phyA_power_on -> seninf_setting/routing.  Must run with clocks and
  * the CAM power domain on (runtime PM get).
  */
-static int seninf_hw_stream_on(struct mt6785_seninf *s,
+static int seninf_hw_stream_on(struct mt6785_seninf *s, int port,
 			       const struct v4l2_mbus_framefmt *fmt)
 {
-	int port = s->csi_port;
+	struct mt6785_seninf_port *p = &s->ports[port];
+	unsigned int seninf_id = csi_port_to_seninf[port];
+	unsigned int settle = hs_settle;
 	int ret;
 
-	if (port < 0 || port >= MT6785_CAM_CSI_PORTS) {
-		dev_err(s->dev, "no sensor bound to a CSI port\n");
+	if (!p->sd) {
+		dev_err(s->dev, "no sensor bound to CSI port %d\n", port);
 		return -ENODEV;
 	}
+
+	dev_dbg(s->dev,
+		"stream on: CSI port %d -> SENINF%u, %u lanes, %ux%u code 0x%x, link freq %llu Hz, settle %u\n",
+		port, seninf_id, p->lanes, fmt->width, fmt->height, fmt->code,
+		seninf_link_freq(s, port), settle);
 
 	/* TOP_PHY_CTRL_CSIp: D-PHY mode (ov-cap.py line 287). */
 	seninf_rmw(s, SENINF_TOP_PHY_CTRL(port), 0x2, 0x1);
 
 	seninf_phy_init(s, port);
-	seninf_dphy_init(s, port);
+	seninf_dphy_init(s, port, settle);
 	seninf_csi_mipi(s, port);
-	seninf_csi2_setup(s);
+	seninf_csi2_setup(s, seninf_id, p->lanes);
 	seninf_phy_setting(s, port);
 	ret = seninf_phy_power_on(s, port);
 	if (ret)
 		return ret;
 
-	seninf_routing_setup(s);
-
-	dev_dbg(s->dev, "stream on: CSI port %d -> SENINF%u, %u lanes, %ux%u\n",
-		port, s->seninf_id, s->lanes, fmt->width, fmt->height);
+	seninf_routing_setup(s, seninf_id);
 
 	return 0;
 }
 
 /* Reverse of the above: disable MUX, CSI2, SENINF, then the analog PHY. */
-static void seninf_hw_stream_off(struct mt6785_seninf *s)
+static void seninf_hw_stream_off(struct mt6785_seninf *s, int port)
 {
-	unsigned int ctrl = SENINF_CTRL(s->seninf_id);
-	unsigned int csi2 = SENINF_CSI2(s->seninf_id);
+	unsigned int seninf_id = csi_port_to_seninf[port];
+	unsigned int ctrl = SENINF_CTRL(seninf_id);
+	unsigned int csi2 = SENINF_CSI2(seninf_id);
 	unsigned int mux = SENINF_MUX(MT6785_CAM_MUX);
 	unsigned int aoff;
-
-	if (s->csi_port < 0)
-		return;
 
 	/* Stop the mux first so CAMSV sees no further pixels. */
 	seninf_rmw(s, mux + 0x0, 0x6, 0x6);
@@ -422,13 +479,12 @@ static void seninf_hw_stream_off(struct mt6785_seninf *s)
 	seninf_rmw(s, ctrl + 0x0, 1, 0);		/* SENINF off */
 
 	/* PHY power-down (ov-cap.py phyA_power_on with bits cleared). */
-	for (aoff = ANA_A(s->csi_port); aoff <= ANA_B(s->csi_port);
-	     aoff += 0x1000) {
+	for (aoff = ANA_A(port); aoff <= ANA_B(port); aoff += 0x1000) {
 		ana_rmw(s, aoff, 0, 4 | 8);
 		ana_rmw(s, aoff, 4 | 8, 0);
 	}
 	/* D-PHY mode off for the port. */
-	seninf_rmw(s, SENINF_TOP_PHY_CTRL(s->csi_port), 0x3, 0x2);
+	seninf_rmw(s, SENINF_TOP_PHY_CTRL(port), 0x3, 0x2);
 }
 
 /* --------------------------------------------------------------------------
@@ -461,10 +517,24 @@ static const u32 seninf_bus_codes[] = {
 	MEDIA_BUS_FMT_SRGGB10_1X10,
 };
 
+static struct v4l2_mbus_framefmt *
+seninf_get_ffmt(struct v4l2_subdev_state *state, unsigned int pad)
+{
+	return v4l2_subdev_state_get_format(state, pad, 0);
+}
+
 static int seninf_enum_mbus_code(struct v4l2_subdev *sd,
 				 struct v4l2_subdev_state *state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
+	/* The source pad only carries what the selected sink receives. */
+	if (code->pad == MT6785_CAM_PAD_SRC) {
+		if (code->index)
+			return -EINVAL;
+		code->code = seninf_get_ffmt(state, MT6785_CAM_PAD_SRC)->code;
+		return 0;
+	}
+
 	if (code->index >= ARRAY_SIZE(seninf_bus_codes))
 		return -EINVAL;
 
@@ -473,17 +543,63 @@ static int seninf_enum_mbus_code(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static struct v4l2_mbus_framefmt *
-seninf_get_ffmt(struct v4l2_subdev_state *state, unsigned int pad)
+/*
+ * The CSI port whose sink link is enabled (the selected sensor), or -1
+ * when none is.  link_setup refuses a second enabled link, so at most
+ * one can be on.  Disabled links are what make this a selector: the
+ * other sensors stay linked but out of the pipeline.
+ */
+static int seninf_enabled_port(struct mt6785_seninf *s)
 {
-	return v4l2_subdev_state_get_format(state, pad, 0);
+	unsigned int port;
+
+	for (port = 0; port < MT6785_CAM_CSI_PORTS; port++) {
+		struct media_link *link;
+
+		list_for_each_entry(link, &s->sd.entity.links, list) {
+			if (link->sink == &s->pads[port] &&
+			    (link->flags & MEDIA_LNK_FL_ENABLED))
+				return port;
+		}
+	}
+
+	return -1;
+}
+
+/*
+ * Make the source pad's format a copy of sink pad @port's format (the
+ * selected sensor's).  With no sensor selected (@port < 0) the source
+ * keeps its format: nothing can stream anyway.  Called after a sink
+ * set_fmt on the selected port and when a sensor link gets enabled (the
+ * t8d-boot lesson: a source pad that follows "whichever sink was set
+ * last" fails link validation).
+ */
+static void seninf_sync_source_fmt(struct v4l2_subdev_state *state,
+				   int port)
+{
+	if (port < 0)
+		return;
+
+	*seninf_get_ffmt(state, MT6785_CAM_PAD_SRC) =
+		*seninf_get_ffmt(state, port);
 }
 
 static int seninf_set_fmt(struct v4l2_subdev *sd,
 			  struct v4l2_subdev_state *state,
 			  struct v4l2_subdev_format *fmt)
 {
+	struct mt6785_seninf *s = sd_to_seninf(sd);
 	unsigned int i;
+
+	/*
+	 * The source pad is the selector output: it mirrors the selected
+	 * sink pad and cannot be set on its own.  Return what it carries
+	 * (the V4L2 convention for a format the pad cannot change).
+	 */
+	if (fmt->pad == MT6785_CAM_PAD_SRC) {
+		fmt->format = *seninf_get_ffmt(state, MT6785_CAM_PAD_SRC);
+		return 0;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(seninf_bus_codes); i++)
 		if (seninf_bus_codes[i] == fmt->format.code)
@@ -495,15 +611,9 @@ static int seninf_set_fmt(struct v4l2_subdev *sd,
 
 	*seninf_get_ffmt(state, fmt->pad) = fmt->format;
 
-	/* Propagate to the source pad: the SENINF is pass-through. */
-	if (fmt->pad != MT6785_CAM_PAD_SRC) {
-		struct v4l2_mbus_framefmt *src;
-
-		src = seninf_get_ffmt(state, MT6785_CAM_PAD_SRC);
-		src->width = fmt->format.width;
-		src->height = fmt->format.height;
-		src->code = fmt->format.code;
-	}
+	/* Only the selected sink defines the source; others are stored. */
+	if ((int)fmt->pad == seninf_enabled_port(s))
+		seninf_sync_source_fmt(state, fmt->pad);
 
 	return 0;
 }
@@ -519,12 +629,18 @@ static int seninf_init_state(struct v4l2_subdev *sd,
 	return 0;
 }
 
+/*
+ * s_stream on the source pad: the streaming sensor is the one whose
+ * link is enabled (the only one media_pipeline_start() walked and
+ * validated); the routing is programmed for its CSI port.
+ */
 static int seninf_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct mt6785_seninf *s = sd_to_seninf(sd);
 	struct v4l2_subdev_state *state;
 	const struct v4l2_mbus_framefmt *fmt;
-	int ret = 0;
+	struct mt6785_seninf_port *p;
+	int port, ret = 0;
 
 	state = v4l2_subdev_lock_and_get_active_state(sd);
 	fmt = seninf_get_ffmt(state, MT6785_CAM_PAD_SRC);
@@ -532,6 +648,14 @@ static int seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	if (enable) {
 		if (s->streaming)
 			goto out;
+
+		port = seninf_enabled_port(s);
+		if (port < 0 || !s->ports[port].sd) {
+			dev_err(s->dev, "no bound sensor with an enabled link\n");
+			ret = -ENOLINK;
+			goto out;
+		}
+		p = &s->ports[port];
 
 		ret = pm_runtime_resume_and_get(s->dev);
 		if (ret < 0)
@@ -542,29 +666,35 @@ static int seninf_s_stream(struct v4l2_subdev *sd, int enable)
 		 * ov-cap.py (SENINF + PHY first, then sensor stream on,
 		 * then CAMSV0 armed by the CAMSV driver's start_streaming).
 		 */
-		ret = seninf_hw_stream_on(s, fmt);
+		ret = seninf_hw_stream_on(s, port, fmt);
 		if (ret) {
 			pm_runtime_mark_last_busy(s->dev);
 			pm_runtime_put_autosuspend(s->dev);
 			goto out;
 		}
 
-		ret = v4l2_subdev_call(s->source_sd, video, s_stream, 1);
+		ret = v4l2_subdev_call(p->sd, video, s_stream, 1);
 		if (ret) {
-			seninf_hw_stream_off(s);
+			seninf_hw_stream_off(s, port);
 			pm_runtime_mark_last_busy(s->dev);
 			pm_runtime_put_autosuspend(s->dev);
 			goto out;
 		}
 
+		s->active_port = port;
 		s->streaming = true;
 	} else {
 		if (!s->streaming)
 			goto out;
 
-		v4l2_subdev_call(s->source_sd, video, s_stream, 0);
-		seninf_hw_stream_off(s);
+		port = s->active_port;
+		p = &s->ports[port];
+
+		v4l2_subdev_call(p->sd, video, s_stream, 0);
+		seninf_hw_stream_off(s, port);
 		s->streaming = false;
+		s->dbg_last_port = port;
+		s->active_port = -1;
 		pm_runtime_mark_last_busy(s->dev);
 		pm_runtime_put_autosuspend(s->dev);
 	}
@@ -620,9 +750,63 @@ static const struct v4l2_subdev_internal_ops seninf_internal_ops = {
 	.init_state = seninf_init_state,
 };
 
+/*
+ * Link selection rules (the t8d-boot lesson: two ENABLED|IMMUTABLE
+ * sensor links made every link validation fail and nothing streamed):
+ *
+ * - sensor->seninf links are not immutable; at most one is ENABLED.
+ *   Enabling a second one is refused (-EBUSY): switching sensors is
+ *   disable the old link, then enable the new one.
+ * - no link change while streaming (the core refuses it too: the sink
+ *   pads are part of the started pipeline).
+ * - enabling a sensor link copies that sink pad's format to the source
+ *   pad.
+ * - the seninf->camsv link is immutable and enabled.
+ *
+ * The core calls this BEFORE it updates link->flags, so the port being
+ * enabled is @local->index, not what seninf_enabled_port() reports yet.
+ */
+static int seninf_link_setup(struct media_entity *entity,
+			     const struct media_pad *local,
+			     const struct media_pad *remote, u32 flags)
+{
+	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(entity);
+	struct mt6785_seninf *s = sd_to_seninf(sd);
+	struct v4l2_subdev_state *state;
+	int port, enabled;
+
+	/* Only the sensor sink links can change. */
+	if (!(local->flags & MEDIA_PAD_FL_SINK) ||
+	    local->index >= MT6785_CAM_CSI_PORTS)
+		return 0;
+
+	if (s->streaming)
+		return -EBUSY;
+
+	/* Disabling is always allowed when not streaming. */
+	if (!(flags & MEDIA_LNK_FL_ENABLED))
+		return 0;
+
+	port = local->index;
+	enabled = seninf_enabled_port(s);
+	if (enabled >= 0 && enabled != port) {
+		dev_err(s->dev,
+			"CSI port %d is already selected; disable its link before enabling port %d\n",
+			enabled, port);
+		return -EBUSY;
+	}
+
+	state = v4l2_subdev_lock_and_get_active_state(sd);
+	seninf_sync_source_fmt(state, port);
+	v4l2_subdev_unlock_state(state);
+
+	return 0;
+}
+
 static const struct media_entity_operations seninf_media_ops = {
 	/* DT port number == sink pad number (0..2 CSI ports). */
 	.get_fwnode_pad = v4l2_subdev_get_fwnode_pad_1_to_1,
+	.link_setup = seninf_link_setup,
 	.link_validate = v4l2_subdev_link_validate,
 };
 
@@ -644,34 +828,54 @@ static int seninf_notifier_bound(struct v4l2_async_notifier *notifier,
 	struct seninf_async_subdev *sasd =
 		container_of(asc, struct seninf_async_subdev, asc);
 	struct mt6785_seninf *s = sasd->seninf;
-	struct media_pad *source_pad;
 	int ret;
 
 	dev_info(s->dev, "%s bound on port %u\n",
 		 sd->entity.name, sasd->port);
 
 	if (sasd->port < MT6785_CAM_CSI_PORTS) {
-		/* Sensor -> sink pad of its CSI port. */
-		ret = v4l2_create_fwnode_links_to_pad(sd, &s->pads[sasd->port],
-						      MEDIA_LNK_FL_IMMUTABLE |
-						      MEDIA_LNK_FL_ENABLED);
+		/*
+		 * Sensor -> sink pad of its CSI port.  The SENINF is a
+		 * selector: the links are not immutable and at most one
+		 * is enabled (link_setup).  The port validated on hardware
+		 * (1, the OV8856) starts enabled, every other one disabled.
+		 *
+		 * The sensor's source pad comes from the endpoint this
+		 * connection matched (asc->match.fwnode is the sensor-side
+		 * endpoint).  It must NOT be looked up through the link:
+		 * media_pad_remote_pad_unique() and friends only see
+		 * ENABLED links, so for a sensor created disabled they
+		 * return -ENOLINK and failed the whole notifier (t8f boot:
+		 * "no unique sensor pad on port 0").
+		 */
+		unsigned int port = sasd->port;
+		u32 flags = port == MT6785_SENINF_DEFAULT_PORT ?
+			    MEDIA_LNK_FL_ENABLED : 0;
+		int src;
+
+		src = media_entity_get_fwnode_pad(&sd->entity, asc->match.fwnode,
+						  MEDIA_PAD_FL_SOURCE);
+		if (src < 0) {
+			dev_err(s->dev, "%s: no source pad for the port %u endpoint: %d\n",
+				sd->entity.name, port, src);
+			return src;
+		}
+
+		ret = media_create_pad_link(&sd->entity, src, &s->sd.entity,
+					    port, flags);
 		if (ret) {
-			dev_err(s->dev, "failed to create link to sensor: %d\n",
+			dev_err(s->dev, "failed to link %s:%d -> %s:%u: %d\n",
+				sd->entity.name, src, s->sd.entity.name, port,
 				ret);
 			return ret;
 		}
 
-		source_pad = media_pad_remote_pad_unique(&s->pads[sasd->port]);
-		if (IS_ERR(source_pad)) {
-			dev_err(s->dev, "no unique sensor pad on port %u\n",
-				sasd->port);
-			return PTR_ERR(source_pad);
-		}
+		s->ports[port].sd = sd;
+		s->ports[port].pad = &sd->entity.pads[src];
 
-		s->source_sd = sd;
-		s->source_pad = source_pad;
-		s->csi_port = sasd->port;
-		s->seninf_id = csi_port_to_seninf[sasd->port];
+		dev_info(s->dev, "port %u: link from %s:%d %s\n", port,
+			 sd->entity.name, src,
+			 flags ? "enabled (selected)" : "disabled");
 	} else {
 		/*
 		 * CAMSV <- our source pad (port 3).  The DT already pairs
@@ -697,13 +901,33 @@ static int seninf_notifier_bound(struct v4l2_async_notifier *notifier,
 	return 0;
 }
 
+/* A sensor module went away: forget it (the core drops its links). */
+static void seninf_notifier_unbind(struct v4l2_async_notifier *notifier,
+				   struct v4l2_subdev *sd,
+				   struct v4l2_async_connection *asc)
+{
+	struct seninf_async_subdev *sasd =
+		container_of(asc, struct seninf_async_subdev, asc);
+	struct mt6785_seninf *s = sasd->seninf;
+
+	if (sasd->port < MT6785_CAM_CSI_PORTS) {
+		s->ports[sasd->port].sd = NULL;
+		s->ports[sasd->port].pad = NULL;
+	}
+}
+
 static int seninf_notifier_complete(struct v4l2_async_notifier *notifier)
 {
 	struct mt6785_seninf *s =
 		container_of(notifier, struct mt6785_seninf, notifier);
+	unsigned int bound = 0, port;
 	int ret;
 
-	if (s->csi_port < 0)
+	for (port = 0; port < MT6785_CAM_CSI_PORTS; port++)
+		if (s->ports[port].sd)
+			bound++;
+
+	if (!bound)
 		dev_warn(s->dev,
 			 "pipeline complete without a bound sensor (no /dev/video streaming possible)\n");
 
@@ -716,6 +940,7 @@ static int seninf_notifier_complete(struct v4l2_async_notifier *notifier)
 
 static const struct v4l2_async_notifier_operations seninf_async_ops = {
 	.bound = seninf_notifier_bound,
+	.unbind = seninf_notifier_unbind,
 	.complete = seninf_notifier_complete,
 };
 
@@ -741,6 +966,8 @@ static int seninf_parse_endpoint(struct mt6785_seninf *s, unsigned int port)
 	}
 
 	if (is_sink) {
+		unsigned int lanes;
+
 		/*
 		 * data-lanes lives on the sensor's endpoint; parse the
 		 * remote side for the lane count, our own endpoint only
@@ -754,13 +981,14 @@ static int seninf_parse_endpoint(struct mt6785_seninf *s, unsigned int port)
 			goto out;
 		}
 
-		s->lanes = vep.bus.mipi_csi2.num_data_lanes;
-		if (s->lanes != 1 && s->lanes != 2 && s->lanes != 4) {
+		lanes = vep.bus.mipi_csi2.num_data_lanes;
+		if (lanes != 1 && lanes != 2 && lanes != 4) {
 			dev_err(s->dev, "port %u: invalid data lane count %u\n",
-				port, s->lanes);
+				port, lanes);
 			ret = -EINVAL;
 			goto out;
 		}
+		s->ports[port].lanes = lanes;
 	}
 
 	sasd = v4l2_async_nf_add_fwnode(&s->notifier, remote,
@@ -782,6 +1010,95 @@ out:
 	fwnode_handle_put(remote);
 	return ret;
 }
+
+/* --------------------------------------------------------------------------
+ * Debugfs: the SENINF side of the status dump — the same values
+ * ov-cap.py prints at the end of a capture (CSI2 counters, DPHY lane
+ * FSMs, MUX/CAM_MUX sizes), for the port that last streamed (or every
+ * bound port when idle), readable without /dev/mem.  The CAMSV side is
+ * mtk-mt6785-camsv's own file.
+ */
+
+static void seninf_dump_port(struct seq_file *m, struct mt6785_seninf *s,
+			     int port)
+{
+	unsigned int seninf_id = csi_port_to_seninf[port];
+	unsigned int csi2 = SENINF_CSI2(seninf_id);
+	unsigned int mux = SENINF_MUX(MT6785_CAM_MUX);
+	unsigned int dphy = ANA_DPHY(port);
+	unsigned int chk_res = SENINF_CAMMUX + 0x108 + 0x10 * MT6785_CAM_MUX;
+	u32 ana_a48 = ana_rd(s, ANA_A(port) + 0x48);
+	u32 ana_b48 = ana_rd(s, ANA_B(port) + 0x48);
+
+	seq_printf(m, "port %d (SENINF%u, %u lanes, sensor %s, link freq %llu Hz, settle %u):\n",
+		   port, seninf_id, s->ports[port].lanes,
+		   s->ports[port].sd ? s->ports[port].sd->name : "none",
+		   seninf_link_freq(s, port), hs_settle);
+	/* Same test as the stream-on poll in seninf_phy_power_on(). */
+	seq_printf(m, "  ANA A/B +0x48  0x%08x / 0x%08x  (cal ok, &0x29 == 0x29: %d/%d)\n",
+		   ana_a48, ana_b48,
+		   (ana_a48 & 0x29) == 0x29, (ana_b48 & 0x29) == 0x29);
+	seq_printf(m, "  CSI2 IRQ_STATUS 0x%08x  LINE_FRAME 0x%08x  PACKET_CNT 0x%08x\n",
+		   seninf_rd(s, csi2 + 0xc8),
+		   seninf_rd(s, csi2 + 0xd0),
+		   seninf_rd(s, csi2 + 0xdc));
+	seq_printf(m, "  DPHY lane FSM  clk[0x30]=0x%08x  dat[0x34]=0x%08x  (0x01 idle, 0x10 HS)\n",
+		   ana_rd(s, dphy + 0x30), ana_rd(s, dphy + 0x34));
+	seq_printf(m, "  MUX%d SIZE 0x%08x  PIX_CNT 0x%08x  mon H %u V %u\n",
+		   MT6785_CAM_MUX,
+		   seninf_rd(s, mux + 0x30), seninf_rd(s, mux + 0xa4),
+		   seninf_rd(s, mux + 0xb0), seninf_rd(s, mux + 0xb8));
+	seq_printf(m, "  CAM_MUX%d CHK_RES 0x%08x  (%u x %u seen)\n",
+		   MT6785_CAM_MUX, seninf_rd(s, chk_res),
+		   seninf_rd(s, chk_res) & 0xffff,
+		   seninf_rd(s, chk_res) >> 16);
+}
+
+static int seninf_status_show(struct seq_file *m, void *v)
+{
+	struct mt6785_seninf *s = m->private;
+	unsigned int port;
+	int ret;
+
+	/* Registers are only readable with the CAM domain and clocks on. */
+	ret = pm_runtime_resume_and_get(s->dev);
+	if (ret < 0) {
+		seq_printf(m, "power domain unavailable: %d\n", ret);
+		return 0;
+	}
+
+	seq_printf(m, "selected port %d, streaming %d, last streamed port %d\n",
+		   seninf_enabled_port(s), s->streaming, s->dbg_last_port);
+
+	if (s->active_port >= 0) {
+		seninf_dump_port(m, s, s->active_port);
+	} else {
+		for (port = 0; port < MT6785_CAM_CSI_PORTS; port++)
+			if (s->ports[port].sd)
+				seninf_dump_port(m, s, port);
+		if (s->dbg_last_port >= 0 && !s->ports[s->dbg_last_port].sd)
+			seq_printf(m, "note: last active port %d has no bound sensor\n",
+				   s->dbg_last_port);
+	}
+
+	pm_runtime_mark_last_busy(s->dev);
+	pm_runtime_put_autosuspend(s->dev);
+
+	return 0;
+}
+
+static int seninf_status_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, seninf_status_show, inode->i_private);
+}
+
+static const struct file_operations seninf_status_fops = {
+	.owner = THIS_MODULE,
+	.open = seninf_status_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
 
 /* --------------------------------------------------------------------------
  * Probe / remove
@@ -827,8 +1144,8 @@ static int seninf_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	s->dev = dev;
-	s->csi_port = -1;
-	s->settle = hs_settle;
+	s->active_port = -1;
+	s->dbg_last_port = -1;
 	dev_set_drvdata(dev, s);
 
 	s->base = devm_platform_ioremap_resource(pdev, 0);
@@ -928,6 +1245,10 @@ static int seninf_probe(struct platform_device *pdev)
 	/* Clocks stay off until the pipeline streams. */
 	pm_runtime_set_suspended(dev);
 
+	/* Status dump (see seninf_status_show); reads power the domain. */
+	s->dbg_status = debugfs_create_file("mt6785-seninf-status", 0444,
+					    NULL, s, &seninf_status_fops);
+
 	dev_info(dev, "MT6785 SENINF registered (CSI ports 0-2 -> mux 2 -> CAMSV0)\n");
 
 	return 0;
@@ -949,6 +1270,8 @@ err_media:
 static void seninf_remove(struct platform_device *pdev)
 {
 	struct mt6785_seninf *s = dev_get_drvdata(&pdev->dev);
+
+	debugfs_remove(s->dbg_status);
 
 	media_device_unregister(&s->media_dev);
 	v4l2_async_nf_unregister(&s->notifier);
