@@ -191,6 +191,12 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c1_pins>;
 	status = "okay";
+
+	/* Lite-On LTR-578ALS (part ID 0xb1); only its light sensor is used */
+	light-sensor@53 {
+		compatible = "liteon,ltr578";
+		reg = <0x53>;
+	};
 };
 
 /*
