@@ -52,6 +52,7 @@ config SND_SOC_ALL_CODECS
 	imply SND_SOC_AK5558
 	imply SND_SOC_ALC5623
 	imply SND_SOC_ALC5632
+	imply SND_SOC_AS33970
 	imply SND_SOC_AUDIO_IIO_AUX
 	imply SND_SOC_AW8738
 	imply SND_SOC_AW87390
@@ -637,6 +638,18 @@ config SND_SOC_ALC5623
 config SND_SOC_ALC5632
 	tristate
 	depends on I2C
+
+config SND_SOC_AS33970
+	tristate "Synaptics AS33970 voice processor"
+	depends on I2C
+	select FW_LOADER
+	help
+	  Enable support for the Synaptics AS33970 microphone voice
+	  processor. The driver loads the chip's firmware over I2C and
+	  exposes its processed microphone signal on an I2S capture DAI.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called snd-soc-as33970.
 
 config SND_SOC_AUDIO_IIO_AUX
 	tristate "Audio IIO Auxiliary device"
