@@ -159,6 +159,8 @@ struct as33970_priv {
 	enum as33970_fw_state fw_state;
 	unsigned int mode;
 	bool recording;
+	/* A capture stream is open; recording starts once the firmware runs */
+	bool stream_on;
 	unsigned int rate;
 	unsigned int width;
 	unsigned int frame_size;
@@ -859,6 +861,15 @@ static int as33970_boot(struct as33970_priv *priv,
 	dev_info(priv->dev, "firmware %u.%u.%u.%u\n",
 		 ver[0], ver[1], ver[2], ver[3]);
 
+	/* A stream opened during the load has been silent so far */
+	if (priv->stream_on && !priv->recording) {
+		ret = as33970_start_record(priv);
+		if (ret < 0)
+			dev_warn(priv->dev, "deferred record start: %d\n", ret);
+		else
+			priv->recording = true;
+	}
+
 	return 0;
 }
 
@@ -966,16 +977,15 @@ static int as33970_prepare(struct snd_pcm_substream *substream,
 			   struct snd_soc_dai *dai)
 {
 	struct as33970_priv *priv = snd_soc_component_get_drvdata(dai->component);
-	long left;
 
-	left = wait_for_completion_interruptible_timeout(&priv->fw_done,
-							 secs_to_jiffies(30));
-	if (left < 0)
-		return left;
-
+	/*
+	 * No wait for the firmware (half a minute after power-on): sound
+	 * servers probe the PCM at start and drop it on an error. A stream
+	 * opened meanwhile is silent until the load ends.
+	 */
 	guard(mutex)(&priv->lock);
 
-	return priv->fw_state == AS33970_FW_READY ? 0 : -ENODEV;
+	return priv->fw_state == AS33970_FW_FAILED ? -ENODEV : 0;
 }
 
 static const struct snd_soc_dai_ops as33970_dai_ops = {
@@ -1060,9 +1070,11 @@ static int as33970_aif_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		if (priv->fw_state != AS33970_FW_READY)
+		if (priv->fw_state == AS33970_FW_FAILED)
 			return -ENODEV;
-		if (priv->recording)
+		priv->stream_on = true;
+		/* Still loading: as33970_boot() starts the recording */
+		if (priv->fw_state != AS33970_FW_READY || priv->recording)
 			return 0;
 		ret = as33970_start_record(priv);
 		if (ret < 0)
@@ -1070,6 +1082,7 @@ static int as33970_aif_event(struct snd_soc_dapm_widget *w,
 		priv->recording = true;
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
+		priv->stream_on = false;
 		if (priv->recording) {
 			as33970_stop_record(priv);
 			priv->recording = false;
