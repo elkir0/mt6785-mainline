@@ -349,30 +349,36 @@
 
 	/* AS33970 enable (GPIO49) and active-low reset (GPIO122), stock DT */
 	as33970_pins: as33970-pins {
-		pins-enable {
-			pinmux = <PINMUX_GPIO49__FUNC_GPIO49>;
-			output-high;
-		};
-
-		pins-reset {
-			pinmux = <PINMUX_GPIO122__FUNC_GPIO122>;
-			output-high;
+		pins-gpio {
+			pinmux = <PINMUX_GPIO49__FUNC_GPIO49>,
+				 <PINMUX_GPIO122__FUNC_GPIO122>;
 		};
 	};
 };
 
 /*
  * Synaptics AS33970 voice processor (microphones) at 0x41 on i2c9 (stock DT:
- * 1 MHz bus, enable GPIO49, reset GPIO122, interrupt GPIO12). It has no
- * firmware of its own: the host loads it through its ROM boot loader. No
- * driver yet: enable and reset are held high so a loader can reach the ROM.
+ * enable GPIO49, reset GPIO122, interrupt GPIO12). It has no firmware of its
+ * own: the driver loads it through the ROM boot loader at every start.
  */
 &i2c9 {
-	/* Slow bus: the AS33970 answers each 32-bit word about 2 us late */
-	clock-frequency = <100000>;
+	/*
+	 * Slow bus: the AS33970 misses the first bit of a 32-bit word when
+	 * bits come faster than one per 11 us (measured with its firmware
+	 * running; about 2 us in its boot loader).
+	 */
+	clock-frequency = <50000>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c9_pins>, <&as33970_pins>;
 	status = "okay";
+
+	as33970: audio-codec@41 {
+		compatible = "synaptics,as33970";
+		reg = <0x41>;
+		reset-gpios = <&pio 122 GPIO_ACTIVE_LOW>;
+		enable-gpios = <&pio 49 GPIO_ACTIVE_HIGH>;
+		#sound-dai-cells = <0>;
+	};
 };
 
 /*
@@ -395,6 +401,8 @@
 		mediatek,platform = <&afe>;
 		mediatek,speaker-codecs = <&spk1>, <&spk2>, <&spk3>, <&spk4>;
 		mediatek,speaker-i2s = "I2S1";
+		mediatek,capture-codec = <&as33970>;
+		mediatek,capture-i2s-clock = "I2S1";
 
 		pinctrl-names = "aud_clk_mosi_off", "aud_clk_mosi_on",
 				"aud_dat_mosi_off", "aud_dat_mosi_on",
