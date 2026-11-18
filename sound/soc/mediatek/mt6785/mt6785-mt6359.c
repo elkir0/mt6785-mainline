@@ -315,6 +315,17 @@ SND_SOC_DAILINK_DEFS(speaker,
 		     DAILINK_COMP_ARRAY(COMP_CODEC("6-0034", "tfa9874-aif")),
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
+/*
+ * Microphones behind a voice processor (Synaptics AS33970) on the I2S2 input.
+ * The codec comes from "mediatek,capture-codec"; without it the link is
+ * dropped. I2S2 has no clock pins of its own: "mediatek,capture-i2s-clock"
+ * names the I2S output whose bit and frame clocks it uses.
+ */
+SND_SOC_DAILINK_DEFS(voice_mic,
+		     DAILINK_COMP_ARRAY(COMP_CPU("I2S2")),
+		     DAILINK_COMP_ARRAY(COMP_CODEC(NULL, "as33970-aif")),
+		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
+
 /* According to the container the amplifier expects I2S with 2 slots of 32 bits, 48 kHz. */
 static int mt6785_mt6359_spk_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 					     struct snd_pcm_hw_params *params)
@@ -420,6 +431,26 @@ static const struct snd_soc_ops mt6785_mt6359_cs35l41_ops = {
 	.hw_params = mt6785_mt6359_cs35l41_hw_params,
 };
 
+static int mt6785_mt6359_voice_mic_init(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_soc_card *card = rtd->card;
+	struct snd_soc_component *cmpnt_afe =
+		snd_soc_rtd_to_cpu(rtd, 0)->component;
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt_afe);
+	const char *clock_i2s;
+	int ret;
+
+	if (of_property_read_string(card->dev->of_node,
+				    "mediatek,capture-i2s-clock", &clock_i2s))
+		return 0;
+
+	ret = mt6785_dai_i2s_set_share(afe, clock_i2s, "I2S2");
+	if (ret)
+		dev_err(card->dev, "I2S2 cannot take its clocks from %s: %d\n",
+			clock_i2s, ret);
+	return ret;
+}
+
 static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
 	{
 		.name = "Playback_1",
@@ -508,6 +539,19 @@ static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
 		.no_pcm = 1,
 		.ignore_suspend = 1,
 		SND_SOC_DAILINK_REG(primary_codec_ch34),
+	},
+	/* MUST BE THE LAST BUT ONE (see mt6785_mt6359_soc_card_probe) */
+	{
+		.name = "Voice Mic",
+		.no_pcm = 1,
+		.capture_only = 1,
+		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
+			   SND_SOC_DAIFMT_CBC_CFC,
+		.ignore_suspend = 1,
+		.init = mt6785_mt6359_voice_mic_init,
+		/* Same frame as the amplifiers: the clocks are shared. */
+		.be_hw_params_fixup = mt6785_mt6359_cs35l41_hw_params_fixup,
+		SND_SOC_DAILINK_REG(voice_mic),
 	},
 	/* MUST BE THE LAST ONE (see mt6785_mt6359_soc_card_probe) */
 	{
@@ -598,6 +642,7 @@ static struct snd_soc_card mt6785_mt6359_card = {
  *   amixer -c 0 cset name='I2S3_TINYCONN_CH1_MUX' DL1_CH1   (etc.)
  */
 static bool mt6785_mt6359_have_speaker;
+static bool mt6785_mt6359_mic_link_done;
 
 static int mt6785_mt6359_late_probe(struct snd_soc_card *card)
 {
@@ -749,13 +794,30 @@ static int mt6785_mt6359_soc_card_probe(struct mtk_soc_card_data *soc_card_data,
 					bool legacy)
 {
 	struct snd_soc_card *card = soc_card_data->card_data->card;
-	struct snd_soc_dai_link *spk_link =
-		&mt6785_mt6359_dai_links[card->num_links - 1];
+	struct snd_soc_dai_link *mic_link =
+		&mt6785_mt6359_dai_links[ARRAY_SIZE(mt6785_mt6359_dai_links) - 2];
+	struct snd_soc_dai_link *spk_link;
 	struct device_node *np;
 	struct i2c_client *spk = NULL;
 	int ret;
 
 	card->late_probe = mt6785_mt6359_late_probe;
+
+	/* Once only: a deferred probe comes back here with the same card. */
+	if (!mt6785_mt6359_mic_link_done) {
+		np = of_parse_phandle(card->dev->of_node,
+				      "mediatek,capture-codec", 0);
+		if (np) {
+			/* the reference is kept for the lifetime of the card */
+			mic_link->codecs->of_node = np;
+		} else {
+			/* no voice processor: Speaker takes the link's place */
+			*mic_link = mic_link[1];
+			card->num_links--;
+		}
+		mt6785_mt6359_mic_link_done = true;
+	}
+	spk_link = &mt6785_mt6359_dai_links[card->num_links - 1];
 
 	ret = mt6785_afe_gpio_init(card->dev);
 	if (ret)
