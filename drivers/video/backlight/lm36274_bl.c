@@ -59,6 +59,12 @@ enum lm36274_ramp_time {
 #define LM36274_BLED_MAP_SHIFT	3
 #define LM36274_BLED_MAP_MASK	GENMASK(3, LM36274_BLED_MAP_SHIFT)
 
+/*
+ * Kinetic KTZ8864A (an LM36274 clone): full-scale LED current, in bits 7:3.
+ * The LM36274 has no such register.
+ */
+#define KTZ8864A_REG_FULL_SCALE	0x15
+
 /**
  * struct lm36274
  * @pdev: platform device
@@ -71,6 +77,8 @@ enum lm36274_ramp_time {
  * @ramp_time: Ramp time for brightness change
  * @ovp: Over Voltage Protection (OVP) threshold
  * @exp_mode: Exponential mode for brightness control
+ * @has_full_scale: Write @full_scale to the KTZ8864A full-scale register
+ * @full_scale: Raw value of that register
  */
 struct lm36274 {
 	struct platform_device *pdev;
@@ -85,6 +93,8 @@ struct lm36274 {
 	enum lm36274_ramp_time ramp_time;
 	enum lm36274_ovp_threshold ovp;
 	bool exp_mode;
+	bool has_full_scale;
+	u32 full_scale;
 };
 
 static int lm36274_bl_update_status(struct backlight_device *bl_dev)
@@ -115,6 +125,13 @@ static int lm36274_init(struct lm36274 *chip)
 	}
 
 	enable_val |= LM36274_BL_EN;
+
+	if (chip->has_full_scale) {
+		ret = regmap_write(chip->regmap, KTZ8864A_REG_FULL_SCALE,
+				   chip->full_scale);
+		if (ret)
+			return ret;
+	}
 
 	ret = regmap_write_bits(chip->regmap, LM36274_REG_BL_CFG_1,
 				LM36274_BLED_MAP_MASK,
@@ -189,6 +206,11 @@ static int lm36274_parse_dt(struct lm36274 *chip,
 		fwnode_property_read_bool(child, "ti,exponential-mode");
 	props->scale = chip->exp_mode ? BACKLIGHT_SCALE_NON_LINEAR :
 					BACKLIGHT_SCALE_LINEAR;
+
+	chip->has_full_scale =
+		!fwnode_property_read_u32(child, "kinetic,full-scale-reg",
+					  &chip->full_scale) &&
+		chip->full_scale <= 0xff;
 
 	ret = fwnode_property_read_u32(child, "ti,ovp-microvolt", &ovp);
 	if (ret) {

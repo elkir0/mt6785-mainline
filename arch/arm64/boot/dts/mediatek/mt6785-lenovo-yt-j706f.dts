@@ -467,10 +467,16 @@
 			compatible = "ti,lm36274-backlight";
 
 			led {
-				default-brightness = <800>;
-				led-sources = <0 1 2>;
+				default-brightness = <2047>;
+				/*
+				 * As the vendor driver: four strings at 21.2 mA
+				 * (0x15 = 0xa0 on the KTZ8864A). Linear mapping:
+				 * the vendor's exponential one turns the panel's
+				 * 28 % PWM duty into 1 % of the LED current.
+				 */
+				led-sources = <0 1 2 3>;
 				max-brightness = <2047>;
-				ti,exponential-mode;
+				kinetic,full-scale-reg = <0xa0>;
 				ti,ovp-microvolt = <29000000>;
 			};
 		};

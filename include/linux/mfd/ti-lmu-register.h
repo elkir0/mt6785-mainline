@@ -120,6 +120,6 @@
 #define LM36274_REG_VOUT_NEG			0x0e
 #define LM36274_VOUT_MASK			0x3F
 
-#define LM36274_MAX_REG				0x13
+#define LM36274_MAX_REG				0x15	/* KTZ8864A full-scale current */
 
 #endif
