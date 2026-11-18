@@ -141,6 +141,17 @@
 	 * fail its probe with -EBUSY and defer the sensor forever (seen
 	 * on the first T8 boot).
 	 */
+	/*
+	 * ERM motor on the MT6359 VIBR LDO, as on begonia. The stock vibrator
+	 * node selects VOSEL 9 (vib_vol = <0x09>), 2.8 V in this LDO's table.
+	 */
+	vibrator {
+		compatible = "regulator-haptic";
+		haptic-supply = <&mt6359_vibr_ldo_reg>;
+		max-microvolt = <2800000>;
+		min-microvolt = <1200000>;
+	};
+
 	vcama: regulator-vcama {
 		compatible = "regulator-fixed";
 		regulator-name = "vcama";
