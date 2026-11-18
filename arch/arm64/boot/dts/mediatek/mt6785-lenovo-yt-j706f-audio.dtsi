@@ -343,7 +343,7 @@
 		pins-bus {
 			pinmux = <PINMUX_GPIO151__FUNC_SDA9>,
 				 <PINMUX_GPIO152__FUNC_SCL9>;
-			bias-disable;
+			bias-pull-up;
 		};
 	};
 
@@ -368,7 +368,8 @@
  * driver yet: enable and reset are held high so a loader can reach the ROM.
  */
 &i2c9 {
-	clock-frequency = <400000>;
+	/* Slow bus: the AS33970 answers each 32-bit word about 2 us late */
+	clock-frequency = <100000>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c9_pins>, <&as33970_pins>;
 	status = "okay";
