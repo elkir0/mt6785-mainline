@@ -1033,13 +1033,18 @@ static const struct hx83102_panel_desc holitech_htf065h045_desc = {
  * does not fit in HFP + HBP, the frame rate drops to ~53 Hz and the
  * panel shows the picture repeated vertically. Run at the vendor rate
  * and widen HFP so that the mode stays at 60 Hz.
+ *
+ * The DSI host adds about 0.07 us of LP transition to each line: with
+ * HFP 128 (60.0 Hz on paper) lines took 7.91 us, the frame ran at
+ * 59.4 Hz and the panel repeated a band of some 25 lines at its first
+ * rows. HFP 114 gives 7.83 us per line, 60.07 Hz measured.
  */
 static const struct drm_display_mode j706f_boe_default_mode = {
 	.clock = 174000,
 	.hdisplay = 1200,
-	.hsync_start = 1200 + 128,
-	.hsync_end = 1200 + 128 + 8,
-	.htotal = 1200 + 128 + 8 + 28,
+	.hsync_start = 1200 + 114,
+	.hsync_end = 1200 + 114 + 8,
+	.htotal = 1200 + 114 + 8 + 28,
 	.vdisplay = 2000,
 	.vsync_start = 2000 + 80,
 	.vsync_end = 2000 + 80 + 8,
