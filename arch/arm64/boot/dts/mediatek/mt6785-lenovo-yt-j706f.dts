@@ -477,6 +477,8 @@
 				led-sources = <0 1 2 3>;
 				max-brightness = <2047>;
 				kinetic,full-scale-reg = <0xa0>;
+				/* the panel's DCS brightness is the one device */
+				kinetic,pwm-brightness-only;
 				ti,ovp-microvolt = <29000000>;
 			};
 		};
@@ -506,6 +508,18 @@
 				regulator-min-microvolt = <4425000>;
 				regulator-max-microvolt = <5825000>;
 			};
+		};
+
+		/*
+		 * Nothing uses the MT6360 LED drivers (the tablet has no camera
+		 * flash): a disabled node makes the MFD skip the cell instead
+		 * of registering it without a node.
+		 */
+		led-controller {
+			compatible = "mediatek,mt6360-led";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
 		};
 
 		regulator {
@@ -1034,7 +1048,13 @@
 	};
 };
 
+/*
+ * Same USB PHY rail (MT6359 VUSB) as the parent mtu3 node. No vbus-supply:
+ * TCPM drives VBUS through the MT6360 OTG regulator, the controllers must
+ * not.
+ */
 &xhci {
+	vusb33-supply = <&mt6359_vusb_ldo_reg>;
 	status = "okay";
 };
 

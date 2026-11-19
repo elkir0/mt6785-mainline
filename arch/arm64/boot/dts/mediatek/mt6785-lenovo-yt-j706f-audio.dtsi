@@ -14,8 +14,8 @@
 /*
  * AFE and its clocks adapted from Xiaomi begonia (same MT6785 SoC):
  * clock-names match aud_clks[] in mt6785-afe-clk.c (plus aud_tdm_clk for
- * mt6785-dai-tdm.c); top_i2s6..9 / apll12_div6..9 do not exist on MT6785 and
- * are treated as optional by the driver.
+ * mt6785-dai-tdm.c); top_mainpll_d4_d4, top_i2s6..9 / apll12_div6..9 do not
+ * exist on MT6785 and are treated as optional by the driver.
  */
 &audsys {
 	power-domains = <&spm MT6785_POWER_DOMAIN_AUDIO>;
@@ -138,6 +138,8 @@
 		cirrus,gpio2-output-enable;
 		/* DSP firmware: cirrus/cs35l41-dsp1-spk-prot-yt-j706f[-spkN].{wmfw,bin} */
 		cirrus,subsystem-id = "yt-j706f";
+		VA-supply = <&amp_va>;
+		VP-supply = <&vsys>;
 		#sound-dai-cells = <1>;
 		sound-name-prefix = "SPK1";
 	};
@@ -153,6 +155,8 @@
 		cirrus,gpio2-src-select = <4>;
 		cirrus,gpio2-output-enable;
 		cirrus,subsystem-id = "yt-j706f";
+		VA-supply = <&amp_va>;
+		VP-supply = <&vsys>;
 		#sound-dai-cells = <1>;
 		sound-name-prefix = "SPK2";
 	};
@@ -168,6 +172,8 @@
 		cirrus,gpio2-src-select = <4>;
 		cirrus,gpio2-output-enable;
 		cirrus,subsystem-id = "yt-j706f";
+		VA-supply = <&amp_va>;
+		VP-supply = <&vsys>;
 		#sound-dai-cells = <1>;
 		sound-name-prefix = "SPK3";
 	};
@@ -183,6 +189,8 @@
 		cirrus,gpio2-src-select = <4>;
 		cirrus,gpio2-output-enable;
 		cirrus,subsystem-id = "yt-j706f";
+		VA-supply = <&amp_va>;
+		VP-supply = <&vsys>;
 		#sound-dai-cells = <1>;
 		sound-name-prefix = "SPK4";
 	};
@@ -395,6 +403,28 @@
 };
 
 / {
+	/*
+	 * CS35L41 VP (boost input, battery level) and VA (1.8 V): the stock DT
+	 * gives the amplifiers no supplies, so nothing in software switches
+	 * them. Placeholders for rails the PMICs keep on, so the driver does
+	 * not fall back to dummy regulators.
+	 */
+	vsys: regulator-vsys {
+		compatible = "regulator-fixed";
+		regulator-name = "vsys";
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	amp_va: regulator-amp-va {
+		compatible = "regulator-fixed";
+		regulator-name = "amp_va";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
 	sound: sound {
 		compatible = "mediatek,mt6785_mt6359";
 		model = "mt6785_mt6359";

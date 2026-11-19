@@ -11,6 +11,7 @@
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/pm_runtime.h>
+#include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/types.h>
 
@@ -127,9 +128,10 @@ static int dw9719_power_up(struct dw9719_device *dw9719, bool detect)
 	 * shared) and wait double the time to be sure, as 100us is not enough
 	 * at least on the DW9718S as found on the motorola-nora smartphone,
 	 * then retry the write.
+	 * The jiggle is expected to fail, don't even log that as error:
+	 * cci_write() logs every failure, so write through the regmap.
 	 */
-	cci_write(dw9719->regmap, reg_pwr, DW9719_STANDBY, NULL);
-	/* the jiggle is expected to fail, don't even log that as error */
+	regmap_write(dw9719->regmap, CCI_REG_ADDR(reg_pwr), DW9719_STANDBY);
 	fsleep(200);
 	cci_write(dw9719->regmap, reg_pwr, DW9719_STANDBY, &ret);
 

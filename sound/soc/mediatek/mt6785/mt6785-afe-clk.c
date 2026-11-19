@@ -629,6 +629,30 @@ void mt6785_mck_disable(struct mtk_base_afe *afe, int mck_id)
 		clk_disable_unprepare(afe_priv->clk[m_sel_id]);
 }
 
+/*
+ * Clocks of the MT8192 layout that the MT6785 clock controllers do not have:
+ * no mainpll_d4_d4 (the audio intbus mux parents are clk26m, mainpll_d2_d4
+ * and mainpll_d7_d2), no I2S6-I2S9 MCK muxes and dividers. A NULL clock is a
+ * no-op for the clk API.
+ */
+static bool mt6785_clk_is_optional(int clk_id)
+{
+	switch (clk_id) {
+	case CLK_TOP_MAINPLL_D4_D4:
+	case CLK_TOP_I2S6_M_SEL:
+	case CLK_TOP_I2S7_M_SEL:
+	case CLK_TOP_I2S8_M_SEL:
+	case CLK_TOP_I2S9_M_SEL:
+	case CLK_TOP_APLL12_DIV6:
+	case CLK_TOP_APLL12_DIV7:
+	case CLK_TOP_APLL12_DIV8:
+	case CLK_TOP_APLL12_DIV9:
+		return true;
+	default:
+		return false;
+	}
+}
+
 int mt6785_init_clock(struct mtk_base_afe *afe)
 {
 	struct mt6785_afe_private *afe_priv = afe->platform_priv;
@@ -641,7 +665,11 @@ int mt6785_init_clock(struct mtk_base_afe *afe)
 		return -ENOMEM;
 
 	for (i = 0; i < CLK_NUM; i++) {
-		afe_priv->clk[i] = devm_clk_get(afe->dev, aud_clks[i]);
+		if (mt6785_clk_is_optional(i))
+			afe_priv->clk[i] = devm_clk_get_optional(afe->dev,
+								 aud_clks[i]);
+		else
+			afe_priv->clk[i] = devm_clk_get(afe->dev, aud_clks[i]);
 		if (IS_ERR(afe_priv->clk[i])) {
 			dev_warn(afe->dev, "%s devm_clk_get %s fail, ret %ld\n",
 				 __func__,

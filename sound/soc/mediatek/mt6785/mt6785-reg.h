@@ -2865,8 +2865,13 @@ enum {
 #define AFE_ASRC_2CH_CON8                              0x0ca0
 #define AFE_ASRC_2CH_CON9                              0x0ca4
 #define AFE_ASRC_2CH_CON10                             0x0ca8
-#define AFE_ASRC_2CH_CON12                             0x0528
-#define AFE_ASRC_2CH_CON13                             0x052c
+/*
+ * The vendor header puts CON12/CON13 at 0x0528/0x052c (the MT8183 layout),
+ * which are AFE_TINY_CONN4/5 on this SoC. Use the MT8192 layout, which
+ * matches the GENERAL1/GENERAL2 ASRC blocks below (base + 0x30/0x34).
+ */
+#define AFE_ASRC_2CH_CON12                             0x0cb0
+#define AFE_ASRC_2CH_CON13                             0x0cb4
 #define AFE_ADDA6_IIR_COEF_02_01                       0x0ce0
 #define AFE_ADDA6_IIR_COEF_04_03                       0x0ce4
 #define AFE_ADDA6_IIR_COEF_06_05                       0x0ce8

@@ -232,10 +232,9 @@ static int get_ssusb_rscs(struct platform_device *pdev, struct ssusb_mtk *ssusb)
 	int ret;
 
 	ssusb->vusb33 = devm_regulator_get(dev, "vusb33");
-	if (IS_ERR(ssusb->vusb33)) {
-		dev_err(dev, "failed to get vusb33\n");
-		return PTR_ERR(ssusb->vusb33);
-	}
+	if (IS_ERR(ssusb->vusb33))
+		return dev_err_probe(dev, PTR_ERR(ssusb->vusb33),
+				     "failed to get vusb33\n");
 
 	clks[0].id = "sys_ck";
 	clks[1].id = "ref_ck";

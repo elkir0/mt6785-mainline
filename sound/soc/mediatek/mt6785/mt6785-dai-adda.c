@@ -355,6 +355,16 @@ static int mtk_adda_pad_top_event(struct snd_soc_dapm_widget *w,
 		else
 			regmap_write(afe->regmap, AFE_AUD_PAD_TOP, 0x30);
 		break;
+	case SND_SOC_DAPM_POST_PMU:
+		regmap_update_bits(afe->regmap, AFE_AUD_PAD_TOP,
+				   RG_RX_FIFO_ON_MASK_SFT,
+				   0x1 << RG_RX_FIFO_ON_SFT);
+		break;
+	case SND_SOC_DAPM_POST_PMD:
+		regmap_update_bits(afe->regmap, AFE_AUD_PAD_TOP,
+				   RG_RX_FIFO_ON_MASK_SFT,
+				   0x0 << RG_RX_FIFO_ON_SFT);
+		break;
 	default:
 		break;
 	}
@@ -898,11 +908,17 @@ static const struct snd_soc_dapm_widget mtk_dai_adda_widgets[] = {
 			      mtk_adda_ch34_ul_event,
 			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 
+	/*
+	 * AFE_AUD_PAD_TOP has monitor bits and is volatile: with it as the
+	 * widget register, DAPM would read it at card registration while the
+	 * AFE is runtime suspended (-EBUSY). The event sets RG_RX_FIFO_ON in
+	 * the same order DAPM would.
+	 */
 	SND_SOC_DAPM_SUPPLY_S("AUD_PAD_TOP", SUPPLY_SEQ_ADDA_AUD_PAD_TOP,
-			      AFE_AUD_PAD_TOP,
-			      RG_RX_FIFO_ON_SFT, 0,
+			      SND_SOC_NOPM, 0, 0,
 			      mtk_adda_pad_top_event,
-			      SND_SOC_DAPM_PRE_PMU),
+			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU |
+			      SND_SOC_DAPM_POST_PMD),
 	SND_SOC_DAPM_SUPPLY_S("ADDA_MTKAIF_CFG", SUPPLY_SEQ_ADDA_MTKAIF_CFG,
 			      SND_SOC_NOPM, 0, 0,
 			      mtk_adda_mtkaif_cfg_event,
