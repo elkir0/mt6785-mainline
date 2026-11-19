@@ -79,6 +79,8 @@ enum lm36274_ramp_time {
  * @exp_mode: Exponential mode for brightness control
  * @has_full_scale: Write @full_scale to the KTZ8864A full-scale register
  * @full_scale: Raw value of that register
+ * @pwm_only: The PWM input alone sets the brightness: keep the I2C level
+ *	      at the default brightness and register no backlight device
  */
 struct lm36274 {
 	struct platform_device *pdev;
@@ -94,6 +96,7 @@ struct lm36274 {
 	enum lm36274_ovp_threshold ovp;
 	bool exp_mode;
 	bool has_full_scale;
+	bool pwm_only;
 	u32 full_scale;
 };
 
@@ -206,6 +209,9 @@ static int lm36274_parse_dt(struct lm36274 *chip,
 		fwnode_property_read_bool(child, "ti,exponential-mode");
 	props->scale = chip->exp_mode ? BACKLIGHT_SCALE_NON_LINEAR :
 					BACKLIGHT_SCALE_LINEAR;
+
+	chip->pwm_only =
+		fwnode_property_read_bool(child, "kinetic,pwm-brightness-only");
 
 	chip->has_full_scale =
 		!fwnode_property_read_u32(child, "kinetic,full-scale-reg",
@@ -337,6 +343,17 @@ static int lm36274_probe(struct platform_device *pdev)
 	chip->lmu_data.max_brightness = MAX_BRIGHTNESS_11BIT;
 	chip->lmu_data.msb_brightness_reg = LM36274_REG_BRT_MSB;
 	chip->lmu_data.lsb_brightness_reg = LM36274_REG_BRT_LSB;
+
+	if (chip->pwm_only) {
+		/*
+		 * The panel's backlight device (its PWM into this chip) is the
+		 * one user space moves; a second device multiplying it only
+		 * confuses brightness tools, which pick the first one.
+		 */
+		fwnode_handle_put(init_data.fwnode);
+		return ti_lmu_common_set_brightness(&chip->lmu_data,
+						    props.brightness);
+	}
 
 	chip->bl_dev = devm_backlight_device_register(&pdev->dev, pdev->name,
 						      &pdev->dev, chip,
